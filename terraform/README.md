@@ -32,6 +32,10 @@ sobre `terraform/modules`).
 | EFS como caché de modelos de los workers | `efs.tf` |
 | SNS y alarmas: colas de fallidos y 5xx del ALB | `alertas.tf` |
 
+El diagrama de esta infraestructura, con los íconos oficiales de AWS, es
+[`arquitectura-aws.drawio`](../arquitectura-aws.drawio) (se abre con draw.io o en app.diagrams.net).
+Está hecho sobre estos archivos y coincide con ellos.
+
 ## Qué hace `terraform apply`
 
 1. Empaqueta el código del repositorio (backend, frontend, worker, evaluador, `ateneo_ml`) y
@@ -103,9 +107,16 @@ este, con el sitio en S3 (cambia también la decisión 11).
 
 ## Correcciones respecto de la Entrega 2
 
-La devolución formal de la E2 todavía no llegó. Lo que sigue son las ocho inconsistencias que
-encontramos nosotros auditando la entrega anterior antes de diseñar la 2.0, y qué las corrige en
-este código. Cuando llegue la devolución se agrega acá lo que falte.
+La devolución de la E2 llegó el 16/10 con tres correcciones. Las tres están implementadas:
+
+| Lo que pidió la cátedra | Cómo quedó | Dónde |
+|-------------------------|------------|-------|
+| Servir el frontend estático directo, no por el balanceador | El bucket web es un sitio estático que el navegador abre sin nada en el medio; la api atiende solo `/api` | `s3.tf`, `ecs.tf` (`WEB_DIR=/sin-sitio`) |
+| Guardar cifrado lo que se guarde en un bucket | No queda ninguna credencial en ningún bucket: la URL de la base vive en Secrets Manager y ECS la inyecta solo a api y procesador. Los cinco buckets llevan SSE-S3 declarado en el código, y las colas, el cifrado de SQS | `datos.tf`, `s3.tf`, `modules/cola/` |
+| Justificar bien el uso de EFS | Es la caché de modelos compartida por los workers: una tarea nueva monta y ya tiene los modelos, sin volver a bajarlos de S3. Cifrado en reposo y en tránsito, montable solo desde el grupo del worker; el evaluador no lo monta | `efs.tf`, `ecs.tf`, `seguridad.tf` |
+
+Antes de que llegara, auditamos la entrega anterior y encontramos ocho inconsistencias más. Esto
+las corrige:
 
 | # | Qué estaba mal en la E2 | Qué lo corrige |
 |---|-------------------------|----------------|
@@ -114,7 +125,7 @@ este código. Cuando llegue la devolución se agrega acá lo que falte.
 | 3 | `generar-env.sh` escribía el usuario `ateneo`, y en la cuenta era `atenteo` | No hay más scripts de entorno a mano: `terraform apply` arma todo y los nombres salen de `locals.tf` y del sufijo guardado en el estado, nunca escritos dos veces |
 | 4 | `apagar.sh` no borraba los ALB, que siguieron cobrando | `terraform destroy` borra lo que creó, balanceador incluido, y `destruir.yml` lo corre desde el pipeline |
 | 5 | En la cuenta, `inf-b` y `data-b` colgaban de la tabla de ruteo principal | Una tabla de ruteo por capa y una asociación explícita por subred (`red.tf`): ninguna subred queda en la principal por omisión |
-| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; RDS es Single-AZ y no tiene standby; el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo se rehace sobre este código |
+| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; RDS es Single-AZ y no tiene standby; el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo, `arquitectura-aws.drawio`, está hecho sobre este código |
 | 7 | El artifact de arquitectura decía «cuatro buckets» y eran cinco | Cinco, enumerados arriba y en `local.buckets`: web, modelos, estudios, evaluación y artefactos |
 | 8 | La AMI dorada no era reproducible desde el repositorio | No hay más AMI dorada: las dos imágenes se construyen dentro de la cuenta a partir del código del repositorio y la etiqueta es su hash (`imagenes.tf`). Mismo commit, misma imagen |
 
@@ -134,18 +145,25 @@ este código. Cuando llegue la devolución se agrega acá lo que falte.
 - **Credenciales de sesión:** se corre desde CloudShell. `scripts/tf.sh` deja el proveedor de AWS
   en `/tmp` para no llenar el giga de `$HOME`.
 
-### Lo que todavía no se probó en un Learner Lab (sección 12 del HTML)
+### Lo que ya se probó en un Learner Lab
 
-| Qué verificar | Si el lab no lo permite |
-|---------------|-------------------------|
-| VPC Link de HTTP API hacia un ALB interno | ALB público que solo acepte un encabezado secreto que agrega API Gateway |
-| Servicios de Fargate (rol vinculado de ECS) y el escalado de Application Auto Scaling | Las mismas imágenes sobre EC2 con Auto Scaling |
-| Cuota de vCPU de Fargate (todo escalado son 8,5 vCPU) | Bajar tamaños y máximos en `ecs.tf` |
-| Container Insights en el cluster (publica `RunningTaskCount`, el divisor del backlog por tarea) | `container_insights = false`: worker y procesador escalan por escalones sobre los mensajes visibles |
-| WAF asociado a un ALB | `waf_activo = false` |
-| Disparador Lambda de Cognito | El backend asigna el grupo en la primera llamada |
-| Push a ECR desde EC2 con `LabInstanceProfile` | Construir con Docker en la máquina de quien corre Terraform |
-| Bucket web público (bloqueo de acceso público a nivel de cuenta) | Servir el sitio desde la api, detrás de API Gateway |
+El 25/10, el workflow `Aplicar` corrió sobre el commit de la Entrega 3 (`e39b70d`) en una cuenta
+del Learner Lab y terminó en nueve minutos con «Apply complete! Resources: 189 added». El
+constructor construyó y subió las dos imágenes, y se crearon sin errores todas las piezas que la
+sección 12 del HTML marcaba como dudosas: el VPC Link hacia el ALB interno, el WAF asociado al ALB,
+los cuatro servicios de Fargate con su escalado, Container Insights, el disparador Lambda de
+Cognito, el push a ECR desde el constructor y el bucket web público. Ninguna necesitó su plan B.
+
+### Lo que falta probar
+
+Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas andar:
+
+| Qué | Cómo se ve | Si falla |
+|-----|------------|----------|
+| El escalado del worker por backlog (Container Insights publica `RunningTaskCount` recién con tareas corriendo) | Carga sostenida en `inferencias` y el servicio `worker` subiendo de 1 a más tareas | `container_insights = false`: escala por escalones sobre los mensajes visibles |
+| La cuota de vCPU de Fargate con todo escalado (8,5 vCPU) | El worker en 4 tareas con el evaluador corriendo | Bajar tamaños y máximos en `ecs.tf` |
+| El disparador de Cognito en un registro real | Crear una cuenta y ver su grupo en la consola de Cognito | Plan B, sin implementar: que el backend asigne el grupo en la primera llamada |
+| El recorrido completo: login, consulta y publicación con el evaluador arrancando de 0 | Los criterios de aceptación de `specs.md` §13 | — |
 
 ## Lo que marca tfsec, y por qué
 
