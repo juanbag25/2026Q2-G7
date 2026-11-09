@@ -27,7 +27,7 @@ soporta el producto:
 2. **Inferir una imagen.** Un usuario sube una imagen médica desde el navegador, el backend encola
    un trabajo, un worker lo procesa y la pantalla muestra la predicción.
 
-**No es un MVP.** No hay usuarios ni permisos, ni juntas de varios modelos, ni facturación. Lo
+**No es un MVP.** No hay permisos por rol ni facturación (la junta de varios modelos ya está: §5.4). Lo
 que sí hay, de punta a punta, es el camino del publicador —subir el ONNX y su contrato desde la
 pantalla— y el del usuario clínico. El resto queda en §13 como evolución.
 
@@ -192,6 +192,33 @@ Navegador              Backend (API)        Postgres      Backend (despachador) 
    probabilidades por clase, el worker que atendió (hostname, prueba 4 de la demo), la duración y
    la cantidad de intentos.
 
+### 5.4 Consultar a una junta de modelos
+
+Lo que da el nombre al producto: varios modelos opinan sobre el mismo estudio y un informe marca
+si coinciden (spec funcional F8 y §6.5; por ahora, solo clasificación).
+
+1. En `/junta` el usuario elige el tipo de estudio y de **2 a 5 modelos distintos** de ese tipo,
+   todos con la evaluación terminada (`estado_evaluacion = ok`).
+2. Sube la imagen **una sola vez**, igual que en §5.3 (`POST /api/estudios` y el `presigned POST`).
+3. `POST /api/consultas {estudio_id, modelo_ids}`: el backend confirma la subida, valida la junta
+   entera, guarda la consulta con **un trabajo `pendiente` por modelo** y deja un mensaje por
+   trabajo en `inferencias`. Responde `202`. Los modelos corren en paralelo, en los workers que
+   haya; worker, procesador y colas no cambian.
+4. La UI hace polling de `GET /api/consultas/{id}`: cada modelo muestra su resultado apenas llega.
+   Cuando terminaron todos y al menos dos anduvieron, arriba aparece el **informe de consenso**:
+   - **peso** de cada modelo = su métrica verificada (el AUC si el evaluador lo midió; si no, la
+     accuracy);
+   - **consenso** = promedio de las probabilidades ponderado por esos pesos → la etiqueta de mayor
+     probabilidad;
+   - **acuerdo** = parte del peso total que suman los modelos que coinciden con el consenso;
+   - **revisión prioritaria** si el acuerdo es menor al 70 %, destacada arriba del informe.
+5. Si algún modelo falla, la consulta queda `parcial` y el consenso se arma con los que
+   anduvieron; con uno solo no hay consenso, y si fallan todos queda en `error`. El resultado
+   cierra con «Herramienta de soporte a la decisión clínica. No reemplaza el criterio médico.»
+
+Nada de la junta se guarda aparte: el estado y el consenso se calculan al leer, con los trabajos
+y las métricas de cada modelo.
+
 ## 6. API del backend
 
 Prefijo `/api`. JSON en UTF-8. Errores con `{ "error": "codigo", "detalle": "texto" }`.
@@ -210,6 +237,8 @@ devuelve `index.html` (rutas del lado del cliente).
 | `POST /api/estudios` | `{tipo_estudio, nombre_archivo, content_type, tamano_bytes}` | `201 {estudio_id, subida: {url, campos}}` | `422` MIME o tamaño no permitido |
 | `POST /api/inferencias` | `{estudio_id, modelo_id}` | `202 Trabajo` (estado `pendiente`) | `404` · `409` estudio no subido · `422` tipo de estudio distinto |
 | `GET /api/trabajos/{id}` | — | `Trabajo` | `404` |
+| `POST /api/consultas` | `{estudio_id, modelo_ids}` (de 2 a 5) | `202 Consulta` (estado `en_cola`, un trabajo `pendiente` por modelo) | `404` · `409` estudio no subido o modelo sin evaluación `ok` · `422` menos de 2 o más de 5, repetidos, otro tipo de estudio u otras etiquetas |
+| `GET /api/consultas/{id}` | — | `Consulta` con cada modelo y, al terminar, el consenso | `404` |
 
 Esquemas:
 
@@ -237,6 +266,21 @@ Esquemas:
   "resultado": { "prediccion": "PNEUMONIA",
                  "probabilidades": { "NORMAL": 0.08, "PNEUMONIA": 0.92 } },
   "error": null, "creado": "…", "actualizado": "…" }
+```
+
+```jsonc
+// Consulta (la junta)
+{ "id": "uuid", "estudio_id": "uuid", "creada": "…",
+  "estado": "completa",                      // en_cola | procesando | completa | parcial | error
+  "consenso": { "prediccion": "PNEUMONIA",   // null hasta que terminan todos, o con menos de 2 ok
+                "probabilidades": { "NORMAL": 0.36, "PNEUMONIA": 0.64 },
+                "acuerdo": 0.67, "revision_prioritaria": true, "umbral_acuerdo": 0.7, "votos": 3 },
+  "inferencias": [                           // un Trabajo por modelo, el de más peso primero, más:
+    { "...": "los campos de Trabajo",
+      "modelo": { "id": "uuid", "nombre": "torax-rx-neumonia", "version": "1.0.0",
+                  "nombre_visible": "Mediscan · Neumonía" },
+      "peso": { "metrica": "auc", "valor": 0.995 },   // null si el modelo perdió su métrica
+      "coincide": true } ] }                 // null mientras no hay consenso
 ```
 
 ### API del worker (interna, puerto 8081, solo desde `sg-alb-int`)
@@ -384,6 +428,18 @@ create table trabajo (                        -- la "cola", tal cual la guía §
 create index trabajo_pendientes on trabajo (estado, actualizado);
 ```
 
+La junta (`migraciones/004_consultas.sql`): una consulta agrupa los trabajos de sus modelos. Un
+trabajo sin consulta es una consulta individual.
+
+```sql
+create table consulta (
+  id          uuid primary key default gen_random_uuid(),
+  estudio_id  uuid not null references estudio(id),
+  creada      timestamptz not null default now()
+);
+alter table trabajo add column consulta_id uuid references consulta(id);
+```
+
 ## 10. Métricas de evaluación
 
 Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen dorada no trae scikit-learn).
@@ -450,6 +506,16 @@ hay publicados, cuántos evaluados, la mejor accuracy y cuántos esperan en el b
 **Barra y pie**: `/api/health` con la instancia que atendió (para ver al ALB alternar) y
 alternador de tema claro / oscuro.
 
+**Junta (`/junta`)** — se llega desde la barra, desde el catálogo y desde la ficha de un modelo
+evaluado.
+- **Armá la junta**: tipo de estudio, los modelos del tipo con la métrica con que pesa cada uno
+  (se eligen de 2 a 5; los que no terminaron la evaluación aparecen deshabilitados), la imagen y
+  **Consultar a la junta**, con el mismo indicador de pasos que una consulta individual.
+- **El informe**: arriba el consenso —la etiqueta, el acuerdo contra la marca del 70 % y
+  «Revisión prioritaria» o «Los modelos coinciden»—; debajo cada modelo con su predicción, sus
+  probabilidades, el worker que lo corrió y «Coincide» o «Discrepa»; al final la leyenda
+  «Herramienta de soporte a la decisión clínica. No reemplaza el criterio médico.»
+
 ## 13. Criterios de aceptación
 
 Los ocho se verificaron contra el entorno local con Docker el 2026-09-07. Lo medido:
@@ -476,12 +542,17 @@ apagado, el trabajo hace 3 intentos y termina en `error` sin colgar nada.
    re-evalúa.
 8. Toda la aplicación corre en local con `docker compose up` (Postgres + MinIO) y los cuatro
    servicios en venv, sin credenciales de AWS.
+9. **Junta**: con los tres modelos de `torax-rx` y una radiografía, `POST /api/consultas` responde
+   `202` con tres trabajos `pendiente` y deja tres mensajes en `inferencias`; al terminar, la
+   consulta queda `completa` con el consenso, el acuerdo y la marca de revisión prioritaria si el
+   acuerdo baja del 70 %. Con un modelo caído queda `parcial` con el consenso de los otros dos.
+   Pedir una junta de 1 o de 6 modelos, o con un modelo sin evaluar, se rechaza.
 
 ## 14. Fuera de alcance (evolución)
 
 - Subida del ONNX desde la web con URL prefirmada (el botón simula lo que sigue después).
 - Cola SQS en lugar de la tabla `trabajo` (riesgos 01 y 02 de la arquitectura).
-- Juntas de varios modelos y consenso.
+- Consenso de juntas para segmentación y detección (la de clasificación está en §5.4).
 - DICOM y de-identificación en origen.
 - Usuarios, planes, consumo, facturación.
 - Evaluación única y firmada por (modelo, conjunto, versión); historial de evaluaciones.
