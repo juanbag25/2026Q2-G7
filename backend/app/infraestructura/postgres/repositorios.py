@@ -6,9 +6,11 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from ...dominio.consulta import Consulta
 from ...dominio.errores import NoEncontrado
 from ...dominio.estudio import Estudio
 from ...dominio.modelo import Modelo, ResultadoEvaluacion
@@ -141,13 +143,34 @@ class RepositorioEstudiosPostgres:
 
 # ---- trabajo ------------------------------------------------------------------------
 
-COLUMNAS_TRABAJO = "id, estudio_id, modelo_id, estado, intentos, worker_id, resultado, duracion_ms, error, creado, actualizado"
+COLUMNAS_TRABAJO = ("id, estudio_id, modelo_id, estado, intentos, worker_id, resultado, duracion_ms, error, "
+                    "creado, actualizado, consulta_id")
 
 
 def _fila_a_trabajo(f: dict[str, Any]) -> Trabajo:
     return Trabajo(id=f["id"], estudio_id=f["estudio_id"], modelo_id=f["modelo_id"], estado=f["estado"],
                    intentos=f["intentos"], worker_id=f["worker_id"], resultado=f["resultado"],
-                   duracion_ms=f["duracion_ms"], error=f["error"], creado=f["creado"], actualizado=f["actualizado"])
+                   duracion_ms=f["duracion_ms"], error=f["error"], creado=f["creado"], actualizado=f["actualizado"],
+                   consulta_id=f["consulta_id"])
+
+
+def _guardar_trabajo(conn: Connection, t: Trabajo) -> None:
+    conn.execute(
+        f"""
+        insert into trabajo ({COLUMNAS_TRABAJO})
+        values (%(id)s, %(estudio_id)s, %(modelo_id)s, %(estado)s, %(intentos)s, %(worker_id)s,
+                %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s, %(consulta_id)s)
+        on conflict (id) do update set
+            estado = excluded.estado, intentos = excluded.intentos, worker_id = excluded.worker_id,
+            resultado = excluded.resultado, duracion_ms = excluded.duracion_ms,
+            error = excluded.error, actualizado = excluded.actualizado
+        """,
+        {"id": t.id, "estudio_id": t.estudio_id, "modelo_id": t.modelo_id, "estado": t.estado,
+         "intentos": t.intentos, "worker_id": t.worker_id,
+         "resultado": Jsonb(t.resultado) if t.resultado is not None else None,
+         "duracion_ms": t.duracion_ms, "error": t.error, "creado": t.creado, "actualizado": t.actualizado,
+         "consulta_id": t.consulta_id},
+    )
 
 
 class RepositorioTrabajosPostgres:
@@ -156,21 +179,7 @@ class RepositorioTrabajosPostgres:
 
     def guardar(self, t: Trabajo) -> None:
         with self._pool.connection() as conn:
-            conn.execute(
-                f"""
-                insert into trabajo ({COLUMNAS_TRABAJO})
-                values (%(id)s, %(estudio_id)s, %(modelo_id)s, %(estado)s, %(intentos)s, %(worker_id)s,
-                        %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s)
-                on conflict (id) do update set
-                    estado = excluded.estado, intentos = excluded.intentos, worker_id = excluded.worker_id,
-                    resultado = excluded.resultado, duracion_ms = excluded.duracion_ms,
-                    error = excluded.error, actualizado = excluded.actualizado
-                """,
-                {"id": t.id, "estudio_id": t.estudio_id, "modelo_id": t.modelo_id, "estado": t.estado,
-                 "intentos": t.intentos, "worker_id": t.worker_id,
-                 "resultado": Jsonb(t.resultado) if t.resultado is not None else None,
-                 "duracion_ms": t.duracion_ms, "error": t.error, "creado": t.creado, "actualizado": t.actualizado},
-            )
+            _guardar_trabajo(conn, t)
 
     def obtener(self, id: UUID) -> Trabajo:
         with self._pool.connection() as conn:
@@ -208,6 +217,37 @@ class RepositorioTrabajosPostgres:
                 (motivo, minutos),
             )
             return cur.rowcount
+
+
+# ---- consulta (la junta) ------------------------------------------------------------
+
+class RepositorioConsultasPostgres:
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def guardar(self, c: Consulta, trabajos: list[Trabajo]) -> None:
+        """Una sola transacción: la consulta y todos sus trabajos, o nada."""
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(
+                "insert into consulta (id, estudio_id, creada) values (%s, %s, %s) on conflict (id) do nothing",
+                (c.id, c.estudio_id, c.creada),
+            )
+            for t in trabajos:
+                _guardar_trabajo(conn, t)
+
+    def obtener(self, id: UUID) -> Consulta:
+        with self._pool.connection() as conn:
+            fila = conn.execute("select id, estudio_id, creada from consulta where id = %s", (id,)).fetchone()
+        if fila is None:
+            raise NoEncontrado(f"no existe la consulta {id}")
+        return Consulta(id=fila["id"], estudio_id=fila["estudio_id"], creada=fila["creada"])
+
+    def trabajos_de(self, id: UUID) -> list[Trabajo]:
+        with self._pool.connection() as conn:
+            filas = conn.execute(
+                f"select {COLUMNAS_TRABAJO} from trabajo where consulta_id = %s order by creado, id", (id,)
+            ).fetchall()
+        return [_fila_a_trabajo(f) for f in filas]
 
 
 # ---- resultados (procesador) --------------------------------------------------------

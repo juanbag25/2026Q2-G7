@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from app.aplicacion.puertos import RefModeloEnBucket, SubidaFirmada
+from app.dominio.consulta import Consulta
 from app.dominio.errores import NoEncontrado, ServicioNoDisponible
 from app.dominio.estudio import Estudio, ObjetoAlmacenado
 from app.dominio.modelo import Modelo
@@ -67,6 +68,27 @@ class RepoTrabajosMemoria:
         if id not in self.datos:
             raise NoEncontrado(f"no existe el trabajo {id}")
         return self.datos[id]
+
+
+class RepoConsultasMemoria:
+    """Comparte los trabajos con el repo de trabajos: lo que escribe el procesador se ve en la junta."""
+
+    def __init__(self, trabajos: RepoTrabajosMemoria):
+        self.datos: dict[UUID, Consulta] = {}
+        self._trabajos = trabajos
+
+    def guardar(self, c: Consulta, trabajos: list[Trabajo]) -> None:
+        self.datos[c.id] = c
+        for t in trabajos:
+            self._trabajos.guardar(t)
+
+    def obtener(self, id: UUID) -> Consulta:
+        if id not in self.datos:
+            raise NoEncontrado(f"no existe la consulta {id}")
+        return self.datos[id]
+
+    def trabajos_de(self, id: UUID) -> list[Trabajo]:
+        return [t for t in self._trabajos.datos.values() if t.consulta_id == id]
 
 
 class AlmacenMemoria:
