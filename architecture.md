@@ -1,9 +1,10 @@
 # Ateneo · Arquitectura de la aplicación
 
-> Estado: borrador 3 · 2026-10-15 · Entrega 3
+> Estado: borrador 4 · 2026-11-09 · Entrega 4
 > Complementa a [specs.md](specs.md) (qué hace) y a «Ateneo en AWS 2.0» (la infraestructura, en
-> [terraform/](terraform/README.md)). Este documento dice **cómo está construido el código** para
-> que entre en esa infraestructura y para que crezca sin reescribirse.
+> [terraform/](terraform/README.md) y dibujada en [arquitectura-aws.drawio](arquitectura-aws.drawio)).
+> Este documento dice **cómo está construido el código** para que entre en esa infraestructura y
+> para que crezca sin reescribirse.
 
 ---
 
@@ -36,7 +37,7 @@ Cuatro servicios de ECS sobre Fargate, dos imágenes, y el sitio en S3.
                                 └──► S3 evaluación (solo por el endpoint de la VPC)
 ```
 
-Las flechas son las que permiten los grupos de seguridad (`terraform/seguridad.tf`). **El worker y
+Las flechas son las que permiten los grupos de seguridad (`terraform/organization/seguridad.tf`). **El worker y
 el evaluador no tocan la base ni tienen credenciales**: publican en `resultados` y el procesador,
 el único escritor, lo aplica. **Nadie llama al worker ni al evaluador**: no abren puertos.
 
@@ -44,11 +45,14 @@ el único escritor, lo aplica. **Nadie llama al worker ni al evaluador**: no abr
 
 ```
 TP-AWS/
-├── specs.md · architecture.md · README.md
+├── specs.md · architecture.md · models_specs.md · README.md
+├── arquitectura-aws.drawio      # el diagrama de la infraestructura en AWS (draw.io, íconos oficiales)
 ├── backend/                     # imagen backend: api y procesador
 │   ├── app/
 │   │   ├── main.py              # la api: crea la app y monta el sitio en "/" (solo en local)
 │   │   ├── procesador.py        # el procesador: migraciones, cola resultados, reenviador
+│   │   ├── demo.py              # con DATOS_DEMO: registra los modelos iniciales y encola su evaluación
+│   │   ├── reintentar_demo.py   # recuperación manual de un modelo de la demo que falló
 │   │   ├── config.py            # Settings (pydantic-settings) desde variables de entorno
 │   │   ├── dominio/             # entidades y reglas puras; sin FastAPI, sin boto3, sin SQL
 │   │   │   ├── modelo.py · estudio.py · trabajo.py · usuario.py
@@ -74,11 +78,13 @@ TP-AWS/
 │   ├── main.py · config.py · aplicacion.py · puertos.py · consumidor.py
 │   └── infraestructura/ conjunto_s3.py · modelo_s3.py · colas_sqs.py
 ├── frontend/                    # React + Vite + TypeScript
-├── migraciones/ 001_inicial.sql · 002_procesador.sql
-├── tools/                       # descargar_modelo · verificar_modelo · preparar_conjunto · subir_conjunto
+├── migraciones/ 001_inicial.sql · 002_procesador.sql · 003_demo.sql
+├── models/                      # catalogo.json y conjuntos.json: los cinco modelos y los dos conjuntos de la demo
+├── tools/                       # demo_assets · esperar_modelo · descargar_modelo · verificar_modelo
+│                                # preparar_conjunto · subir_conjunto · empaquetar_codigo
 ├── docker/                      # Dockerfile.backend · Dockerfile.ml · Dockerfile.tests · elasticmq.conf
 ├── docker-compose.yml           # la misma topología en local: Postgres, MinIO, ElasticMQ y los cuatro servicios
-└── terraform/                   # toda la infraestructura: terraform apply levanta todo
+└── terraform/                   # organization/ (toda la infraestructura) y modules/cola: terraform apply levanta todo
 ```
 
 **Por qué `ateneo_ml` es un paquete aparte, y worker y evaluador comparten imagen.** La accuracy
@@ -312,34 +318,39 @@ fijos, más un test contra `modelo.onnx` real marcado `@slow` que solo corre si 
 
 React + Vite + TypeScript, CSS propio, sin librerías.
 
-Tres vistas, una por público: la **portada** cuenta qué es Ateneo y abre las otras dos;
-**publicación** es la vista de quien sube modelos; **consulta** la de quien atiende pacientes. El
-único estado que comparten es el que ya vive en la API.
+Cuatro vistas. La **portada** cuenta qué es Ateneo y muestra los modelos incluidos; el
+**catálogo** lista los publicados con sus métricas; la **ficha** de cada modelo muestra cómo rindió
+contra el conjunto reservado y, al lado, deja analizar un estudio con él (lo que antes era la vista
+de consulta); **publicar** es la vista de quien sube modelos. Portada, catálogo y fichas son
+públicos; publicar y analizar piden sesión. El único estado que comparten es el que ya vive en la API.
 
 ```
 src/
-├── api/ cliente.ts · tipos.ts · modelos.ts · estudios.ts · inferencias.ts · trabajos.ts
+├── api/ cliente.ts · tipos.ts · modelos.ts · estudios.ts · inferencias.ts · trabajos.ts · salud.ts
 │   ├── s3.ts                   # subir un archivo con un presigned POST, con progreso (XHR)
 │   ├── configuracion.ts        # /config.json: dónde está la API y los clientes de Cognito
 │   └── sesion.ts               # login con Cognito: ingresar, crear cuenta, recibir los tokens, salir
 ├── hooks/
-│   ├── useModelos.ts           # publicados + disponibles; refresco
+│   ├── useModelos.ts           # catálogo público + lo del bucket si hay sesión + estado de la demo
+│   ├── useModelo.ts            # la ficha de un modelo; la vuelve a pedir cada 4 s mientras se evalúa
 │   ├── usePublicacion.ts       # subir el ONNX → publicar + polling del modelo cada 3 s
 │   ├── useInferencia.ts        # crear estudio → POST a S3 → encolar → polling del trabajo cada 1,5 s
 │   ├── useSalud.ts             # GET /api/health cada 10 s, para la barra y el pie
 │   ├── useSesion.ts            # la sesión de Cognito; re-renderiza al ingresar o salir
 │   └── useTema.ts              # claro/oscuro; sin elección manda prefers-color-scheme
-├── enrutador.tsx               # useRuta() + <Enlace>: History API, tres rutas, ~60 líneas
+├── enrutador.tsx               # useRuta() + <Enlace>: History API, cuatro rutas, ~90 líneas
 ├── components/
-│   ├── Marca · Navegacion · PieSitio · DiagramaFlujo · PideIngreso   # identidad, marco y login
-│   ├── SubirModelo · ListaDisponibles · CatalogoModelos · TarjetaEvaluacion
-│   └── SelectorModelo · ResumenMedida · CargadorImagen · EstadoTrabajo · ResultadoInferencia · EstadoApi
+│   ├── Marca · Navegacion · PieSitio · EstadoApi · PideIngreso                  # identidad, marco y login
+│   ├── TarjetaModelo · Paginacion · EstadoModelo · RendimientoModelo            # catálogo y ficha
+│   ├── SubirModelo · ListaDisponibles                                           # publicación
+│   └── AnalizarEstudio · CargadorImagen · EstadoTrabajo · ResultadoInferencia   # analizar un estudio
 ├── pages/
-│   ├── Inicio.tsx              # "/"          portada: qué es, el recorrido, las dos puertas
-│   ├── Publicar.tsx            # "/publicar"  bucket → alta → evaluación en vivo → catálogo
-│   └── Consulta.tsx            # "/consulta"  modelo medido → estudio → predicción
-├── utilidades/ formato.ts · contrato.ts                     # lectura del modelo.json en el navegador
-└── estilos/ base.css · sitio.css · paneles.css              # tokens, sitio, paneles
+│   ├── Inicio.tsx              # "/"              portada: qué es, los modelos incluidos, cómo funciona
+│   ├── Modelos.tsx             # "/modelos"       el catálogo: tarjetas filtrables por tipo de estudio
+│   ├── FichaModelo.tsx         # "/modelos/<id>"  cómo rindió en la evaluación y, al lado, analizar un estudio
+│   └── Publicar.tsx            # "/publicar"      subir un modelo, seguir su evaluación, lo que hay en el bucket
+├── utilidades/ formato.ts · contrato.ts · metricas.ts · modelos.ts   # presentación, modelo.json, métricas
+└── estilos/ base.css · sitio.css · paneles.css                       # tokens, sitio, paneles
 ```
 
 - Componentes sin `fetch`: reciben datos y callbacks. Los hooks usan `api/`. Cambiar la API es
@@ -357,9 +368,10 @@ src/
   vuelve a pedir el ingreso (`components/PideIngreso.tsx`). Crear cuenta deja elegir institución o
   publicador; cada uno entra por su cliente de Cognito.
 - **Ruteo propio, no react-router.** `enrutador.tsx` es `useSyncExternalStore` sobre
-  `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son tres rutas fijas
-  y una dependencia menos; el bucket web devuelve `index.html` como documento de error (y `sitio.py`
-  en local), así que recargar `/consulta` funciona.
+  `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son cuatro rutas
+  (`/`, `/modelos`, `/modelos/<id>`, `/publicar`; `/consulta`, de la versión anterior, cae en el
+  catálogo) y una dependencia menos. El bucket web devuelve `index.html` como documento de error (y
+  `sitio.py` en local), así que recargar `/modelos/<id>` funciona.
 - **Identidad visual**: la misma de los documentos del proyecto (verde clínico `#0E6B66`, Archivo
   para títulos, Source Sans 3 para el cuerpo, IBM Plex Mono para los datos), en tokens de CSS con
   tema claro y oscuro. Las fuentes vienen de Google Fonts con `display=swap` y una pila del sistema
@@ -369,18 +381,20 @@ src/
 
 | Servicio | Variable | Uso |
 |----------|----------|-----|
-| api | `DATABASE_URL` (secreto) · `BUCKET_MODELOS` · `BUCKET_ESTUDIOS` · `COLA_INFERENCIAS_URL` · `COLA_EVALUACIONES_URL` · `COGNITO_USER_POOL_ID` · `COGNITO_CLIENT_IDS` · `ORIGEN_WEB` | encolar y validar tokens |
-| procesador | `DATABASE_URL` (secreto) · `COLA_RESULTADOS_URL` · `COLA_INFERENCIAS_URL` · buckets | aplicar resultados y reenviar |
-| worker | `COLA_INFERENCIAS_URL` · `COLA_RESULTADOS_URL` · `MODELOS_DIR=/mnt/modelos` · `CACHE_SESIONES=4` | caché EFS · LRU |
+| api | `DATABASE_URL` (secreto) · `BUCKET_MODELOS` · `BUCKET_ESTUDIOS` · `COLA_INFERENCIAS_URL` · `COLA_EVALUACIONES_URL` · `COGNITO_USER_POOL_ID` · `COGNITO_CLIENT_IDS` · `ORIGEN_WEB` · `WEB_DIR` · `DATOS_DEMO` | encolar, validar tokens y servir el catálogo |
+| procesador | `DATABASE_URL` (secreto) · `COLA_RESULTADOS_URL` · `COLA_INFERENCIAS_URL` · buckets · `DATOS_DEMO` (con la demo, también `COLA_EVALUACIONES_URL`) | aplicar resultados, reenviar y sembrar la demo |
+| worker | `COLA_INFERENCIAS_URL` · `COLA_RESULTADOS_URL` · `MODELOS_DIR=/mnt/modelos` · `CACHE_SESIONES` (4 por defecto) | caché EFS · LRU |
 | evaluador | `COLA_EVALUACIONES_URL` · `COLA_RESULTADOS_URL` · `BUCKET_EVALUACION` · `BUCKET_MODELOS` | evaluar y publicar |
 | todos (local) | `AWS_ENDPOINT_URL_S3=http://minio:9000` · `AWS_ENDPOINT_URL_SQS=http://sqs:9324` | boto3 los lee solo; en AWS no se definen |
 
-En AWS las escribe Terraform en cada definición de tarea (`terraform/ecs.tf`).
+En AWS las escribe Terraform en cada definición de tarea (`terraform/organization/ecs.tf`): las tres
+URL de cola y `AWS_REGION` van a los cuatro servicios, y cada uno lee las que usa. En la api,
+`WEB_DIR=/sin-sitio`: el sitio lo sirve S3 y la tarea atiende solo `/api`.
 
 ## 10. Desarrollo local
 
 ```
-docker compose up -d --build      # db · minio · sqs (ElasticMQ) · migraciones · api · procesador · worker · evaluador
+docker compose up -d --build      # db · minio · sqs (ElasticMQ) · demo-init · migraciones · api · procesador · worker · evaluador
 ```
 
 Reproduce la topología de AWS: Postgres hace de RDS, MinIO de S3 y ElasticMQ de SQS, con las mismas
