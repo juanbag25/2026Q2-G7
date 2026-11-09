@@ -53,6 +53,7 @@ export default function Navegacion({ sobrePortada, tema, onAlternarTema }: Props
           <Enlace a="/modelos" prefijo>
             Modelos
           </Enlace>
+          <Enlace a="/junta">Junta</Enlace>
           <Enlace a="/publicar">Publicar</Enlace>
         </nav>
 

@@ -9,6 +9,7 @@ import { useSesion } from "./hooks/useSesion";
 import { useTema } from "./hooks/useTema";
 import FichaModelo from "./pages/FichaModelo";
 import Inicio from "./pages/Inicio";
+import Junta from "./pages/Junta";
 import Modelos from "./pages/Modelos";
 import Publicar from "./pages/Publicar";
 
@@ -22,6 +23,8 @@ function titulo(ruta: Ruta): string {
       return "Modelo · Ateneo";
     case "publicar":
       return "Publicar un modelo · Ateneo";
+    case "junta":
+      return "Junta de modelos · Ateneo";
   }
 }
 
@@ -65,6 +68,7 @@ export default function App({ errorIngreso }: Props) {
         {ruta.vista === "inicio" && <Inicio />}
         {ruta.vista === "modelos" && <Modelos />}
         {ruta.vista === "modelo" && <FichaModelo key={ruta.id} id={ruta.id} />}
+        {ruta.vista === "junta" && <Junta />}
         {ruta.vista === "publicar" && (pideIngreso ? <PideIngreso /> : <Publicar />)}
       </main>
 

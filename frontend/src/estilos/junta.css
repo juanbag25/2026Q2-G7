@@ -1,0 +1,290 @@
+/* Ateneo · la junta de modelos: elegir los modelos, el informe de consenso y cada modelo. */
+
+.junta-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.5fr);
+  align-items: start;
+  gap: 24px;
+}
+
+@media (max-width: 900px) {
+  .junta-cuerpo {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel-junta {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panel-junta .panel-cabecera {
+  margin-bottom: 0;
+}
+
+/* --- Elegir los modelos ------------------------------------------------ */
+
+.selector-junta {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.selector-junta ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.opcion-junta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-chico);
+  background: var(--superficie);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.opcion-junta:hover:not(.bloqueada) {
+  border-color: var(--borde-fuerte);
+}
+
+.opcion-junta.marcada {
+  border-color: var(--acento);
+  background: var(--acento-suave);
+}
+
+.opcion-junta.bloqueada {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.opcion-junta input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--acento);
+}
+
+.opcion-nombre {
+  font-weight: 600;
+  color: var(--tinta);
+  min-width: 0;
+}
+
+.opcion-peso {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--texto-suave);
+  text-align: right;
+}
+
+@media (max-width: 480px) {
+  .opcion-junta {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .opcion-peso {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+
+/* --- El informe -------------------------------------------------------- */
+
+.resultado-junta {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.consenso {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--borde);
+  border-radius: 18px;
+  background: var(--superficie-2);
+}
+
+/* Revisión prioritaria: destacada arriba del informe, como pide la spec (§6.5). */
+.consenso-revisar {
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  background: var(--error-suave);
+}
+
+.consenso-cabecera {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.consenso-espera {
+  flex-direction: row;
+  align-items: center;
+  gap: 18px;
+}
+
+.consenso-espera p {
+  margin-top: 4px;
+}
+
+.acuerdo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acuerdo-cifras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: 14px;
+}
+
+.acuerdo-valor {
+  font-size: 34px;
+  font-weight: 700;
+  font-stretch: 112%;
+  letter-spacing: -0.03em;
+  color: var(--tinta);
+  font-variant-numeric: tabular-nums;
+}
+
+.acuerdo-pista {
+  position: relative;
+  display: block;
+  overflow: visible;
+  background: var(--superficie);
+}
+
+.acuerdo-pista .barra-relleno {
+  background: var(--acento);
+}
+
+.consenso-revisar .acuerdo-pista .barra-relleno {
+  background: var(--error);
+}
+
+/* La marca del 70 %: de qué lado cae el acuerdo se ve sin leer el número. */
+.acuerdo-umbral {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--tinta);
+}
+
+.nota-revisar {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--error);
+}
+
+.titulo-cada-modelo {
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+
+.grilla-junta {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 16px;
+}
+
+.inferencia-junta {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--borde);
+  border-radius: 18px;
+  background: var(--superficie);
+  min-width: 0;
+}
+
+.inferencia-junta.discrepa {
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+.inferencia-cabecera {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inferencia-cabecera h4 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--tinta);
+}
+
+.inferencia-cabecera .suave {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.inferencia-junta .prediccion {
+  padding: 12px 14px;
+}
+
+.inferencia-junta .prediccion-valor {
+  font-size: 22px;
+}
+
+.inferencia-espera {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.leyenda-clinica {
+  padding: 12px 16px;
+  border-radius: var(--radio-chico);
+  background: var(--senal-suave);
+  color: var(--senal);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.como-funciona {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 15px;
+  color: var(--texto-suave);
+}
+
+.como-funciona ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.como-funciona strong {
+  color: var(--tinta);
+}

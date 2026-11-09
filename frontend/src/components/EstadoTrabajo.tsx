@@ -3,15 +3,18 @@ import type { EtapaInferencia } from "../hooks/useInferencia";
 
 const MAX_INTENTOS = 3; // MAX_INTENTOS del backend
 
+/** Lo único que mira del trabajo; la junta le pasa el avance de toda la consulta. */
+type Avance = Pick<Trabajo, "estado" | "intentos">;
+
 interface Props {
   etapa: EtapaInferencia;
-  trabajo: Trabajo | null;
+  trabajo: Avance | null;
 }
 
 type EstadoPaso = "pendiente" | "activo" | "hecho" | "error";
 
 /** Índice del paso en curso según la etapa del hook y el estado del trabajo. */
-function pasoActivo(etapa: EtapaInferencia, trabajo: Trabajo | null): number {
+function pasoActivo(etapa: EtapaInferencia, trabajo: Avance | null): number {
   switch (etapa) {
     case "idle":
       return -1;
