@@ -3,6 +3,7 @@ import { Flecha } from "../components/Navegacion";
 import TarjetaModelo from "../components/TarjetaModelo";
 import { Enlace } from "../enrutador";
 import { useModelos } from "../hooks/useModelos";
+import { useSesion } from "../hooks/useSesion";
 import { porcentaje } from "../utilidades/formato";
 import { lideres } from "../utilidades/metricas";
 import { modelosIniciales } from "../utilidades/modelos";
@@ -40,6 +41,7 @@ function FondoPortada() {
 
 export default function Inicio() {
   const { publicados, error, demo } = useModelos();
+  const { ofrecerPublicar } = useSesion();
 
   const evaluados = publicados.filter((m) => m.estado_evaluacion === "ok" && m.accuracy !== null);
   const mejor = evaluados.reduce<number | null>((max, m) => Math.max(max ?? 0, m.accuracy ?? 0), null);
@@ -76,9 +78,11 @@ export default function Inicio() {
               <Enlace a="/modelos" className="pildora pildora-clara">
                 Elegir un modelo <Flecha />
               </Enlace>
-              <Enlace a="/publicar" className="pildora pildora-vidrio">
-                Publicar uno propio
-              </Enlace>
+              {ofrecerPublicar && (
+                <Enlace a="/publicar" className="pildora pildora-vidrio">
+                  Publicar uno propio
+                </Enlace>
+              )}
             </div>
           </div>
 
@@ -149,17 +153,19 @@ export default function Inicio() {
         </ol>
       </section>
 
-      <section className="marco seccion">
-        <div className="banda">
-          <div>
-            <h2>¿Querés sumar tu propio modelo?</h2>
-            <p>También podés publicarlo para que lo evaluemos y sumarlo al catálogo. Es opcional: podés usar los modelos disponibles sin publicar uno.</p>
+      {ofrecerPublicar && (
+        <section className="marco seccion">
+          <div className="banda">
+            <div>
+              <h2>¿Querés sumar tu propio modelo?</h2>
+              <p>También podés publicarlo para que lo evaluemos y sumarlo al catálogo. Es opcional: podés usar los modelos disponibles sin publicar uno.</p>
+            </div>
+            <Enlace a="/publicar" className="pildora pildora-clara">
+              Publicar uno propio <Flecha />
+            </Enlace>
           </div>
-          <Enlace a="/publicar" className="pildora pildora-clara">
-            Publicar uno propio <Flecha />
-          </Enlace>
-        </div>
-      </section>
+        </section>
+      )}
     </div>
   );
 }

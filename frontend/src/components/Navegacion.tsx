@@ -38,7 +38,7 @@ export function Flecha() {
 
 /** Barra superior: marca, las secciones en una píldora, tema y sesión. */
 export default function Navegacion({ sobrePortada, tema, onAlternarTema }: Props) {
-  const { sesion, conLogin } = useSesion();
+  const { sesion, conLogin, ofrecerPublicar } = useSesion();
 
   return (
     <header className={sobrePortada ? "barra barra-portada" : "barra"}>
@@ -53,7 +53,7 @@ export default function Navegacion({ sobrePortada, tema, onAlternarTema }: Props
           <Enlace a="/modelos" prefijo>
             Modelos
           </Enlace>
-          <Enlace a="/publicar">Publicar</Enlace>
+          {ofrecerPublicar && <Enlace a="/publicar">Publicar</Enlace>}
         </nav>
 
         <div className="barra-fin">
