@@ -249,6 +249,30 @@ Esquemas:
 El worker es idempotente por construcción: misma entrada, misma salida, no escribe nada.
 `400` si el contrato no se puede aplicar a la imagen; `404` si falta el objeto en S3.
 
+### Quién puede llamar a cada ruta (Entrega 4)
+
+Con Cognito, cada ruta de `/api` salvo `/api/publico/*` y `/api/health` pide el access token
+(`401 no_autenticado` sin él) y una cuenta de alguno de estos grupos (`403 sin_permiso` si no):
+
+| Rutas | Cuentas |
+|-------|---------|
+| `/api/modelos/disponibles` · `/api/modelos/subidas` · `/api/modelos/publicar` | publicador · admin de plataforma |
+| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` | médico · admin de institución · admin de plataforma |
+| `/api/publico/*` · `/api/health` | cualquiera, sin token |
+
+Además, cada estudio y cada trabajo es de quien lo creó: `POST /api/inferencias` sobre un estudio
+ajeno y `GET /api/trabajos/{id}` de un trabajo ajeno responden el mismo `404` que un id que no
+existe; el admin de plataforma ve todo. `POST /api/modelos/publicar` con `contrato` sobre un modelo
+que publicó otra cuenta responde `403`; sin `contrato` (volver a evaluarlo) lo puede cualquiera que
+publica.
+
+```jsonc
+// 403
+{ "error": "sin_permiso", "detalle": "esto es para cuentas de publicador y la tuya es de institución" }
+```
+
+Sin Cognito (local, tests) no hay control de acceso: el usuario anónimo pasa por todo.
+
 ## 7. Contrato del modelo
 
 Un modelo es un prefijo en S3 con dos objetos:
@@ -384,6 +408,10 @@ create table trabajo (                        -- la "cola", tal cual la guía §
 create index trabajo_pendientes on trabajo (estado, actualizado);
 ```
 
+`migraciones/005_autoria.sql` agrega de quién es cada fila: `creado_por text` en `estudio` y
+`trabajo`, y `publicado_por text` en `modelo`, con el `sub` de Cognito (`plataforma` para los
+modelos de la demo). Las filas anteriores quedan en `null` y solo las ve un admin de plataforma.
+
 ## 10. Métricas de evaluación
 
 Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen dorada no trae scikit-learn).
@@ -410,6 +438,7 @@ de los casos falla, la evaluación termina en `error`.
 | Límites de entrada | Imagen ≤ 20 MB, MIME `image/png` o `image/jpeg`. |
 | Rutas del cliente | `404` fuera de `/api` → `index.html` (guía §10). |
 | Sin autenticación | Punto de extensión `Depends(usuario_actual)`, hoy anónimo. |
+| Permisos por rol y por autoría | Cada router pide los grupos de Cognito que admite (`403`); un estudio o un trabajo ajeno da `404`. Ver §6, «Quién puede llamar a cada ruta». |
 
 ## 12. Pantallas
 
