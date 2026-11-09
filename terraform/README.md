@@ -253,7 +253,7 @@ no, porque las del Learner Lab vencen cada sesión:
 |----------|--------------|----------|----------|
 | `validar.yml` | solo, en cada push y cada PR | no | `fmt -check`, `init -backend=false`, `validate`, `test` |
 | `plan.yml` | en el PR hacia `main`, y a mano | sí | bucket del estado, `init` y `plan`; guarda el plan como artifact |
-| `aplicar.yml` | **solo a mano**, escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial |
+| `aplicar.yml` | al mergear a `main` (un push a `main`), y a mano escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial |
 | `destruir.yml` | **solo a mano**, escribiendo «destruir» | sí | `tf.sh destroy` |
 
 El ciclo `init` → `validate` → `plan` → `apply` que pide la entrega queda así: `validar.yml` hace
@@ -271,10 +271,10 @@ salteado es el artifact, y que el resumen del run traiga la salida de `terraform
 Los workflows no repiten comandos: llaman a `scripts/bootstrap-estado.sh` y `scripts/tf.sh`, los
 mismos que usa una persona en CloudShell. Así el pipeline no puede desalinearse de esta guía.
 
-Aplicar y destruir no se disparan con un push, a propósito: el lab cuesta unos USD 7 por día
-prendido y la regla de uso es destruir al terminar: prenderlo es una decisión de una persona.
-Los tres comparten `concurrency: infraestructura`, así que nunca corren dos a la vez contra la
-misma cuenta.
+Destruir no se dispara con un push, a propósito: un merge no tiene que poder apagarle el entorno a
+otro. Aplicar sí corre al mergear a `main`, además de a mano, así que mergear también es prender el
+lab, que cuesta unos USD 7 por día: la regla de uso sigue siendo destruir al terminar. Los tres
+comparten `concurrency: infraestructura`, así que nunca corren dos a la vez contra la misma cuenta.
 
 ### Secrets que hay que cargar en el repositorio
 
@@ -290,6 +290,15 @@ En Settings → Secrets and variables → Actions → New repository secret:
 
 Las tres primeras **vencen cada sesión del lab** (unas cuatro horas): hay que volver a pegarlas
 antes de correr `plan`, `aplicar` o `destruir`.
+
+**Sin esas credenciales cargadas a mano no hay despliegue desde GitHub, y no hay forma de
+evitarlo.** GitHub Actions entra a la cuenta del Learner Lab solo con las credenciales de la
+sesión: el lab no deja crear roles de IAM, así que tampoco hay OIDC entre GitHub y AWS ni una
+credencial que no venza. Antes de mergear a `main` (o de correr `aplicar` a mano) hay que pegar las
+de la sesión actual. Si faltan, `Aplicar` falla en el `init`, porque sin credenciales no se crea el
+bucket del estado ni `backend.hcl`; si vencieron, falla con un mensaje que lo dice. En los dos
+casos no despliega nada: es lo esperado, no un error del pipeline. Pasó en el merge de la Entrega 3
+(25/10): el `Aplicar` del push falló, se cargaron las credenciales y el `Aplicar` manual desplegó.
 
 ## Inicialización automática de modelos
 
