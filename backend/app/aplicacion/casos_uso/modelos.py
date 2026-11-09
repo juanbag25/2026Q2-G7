@@ -8,6 +8,7 @@ from uuid import UUID
 from ...dominio.contrato import ContratoInvalido, ContratoModelo
 from ...dominio.errores import Conflicto, EntradaInvalida, ServicioNoDisponible
 from ...dominio.modelo import Modelo
+from ...dominio.usuario import Usuario
 from ..puertos import (
     CatalogoModelosEnBucket, ColaEvaluaciones, EvaluacionesSinNoticias, PeticionEvaluacion, Reloj,
     RepositorioModelos, SubidaFirmada,
@@ -95,6 +96,10 @@ class PublicarModelo:
 
     Si la cola no contesta, el modelo queda en `error` con el motivo: se puede
     volver a publicar, y nada queda esperando una evaluación que nunca llega.
+
+    El modelo nuevo queda a nombre de `usuario` (`publicado_por`). Uno que ya existe se puede
+    volver a evaluar desde cualquier cuenta que publica, pero cambiarle el contrato solo lo
+    puede quien lo publicó: si no, es 403.
     """
 
     def __init__(self, catalogo: CatalogoModelosEnBucket, modelos: RepositorioModelos, reloj: Reloj,
@@ -105,7 +110,8 @@ class PublicarModelo:
         self._prefijo = prefijo_modelos
         self._cola = cola
 
-    def ejecutar(self, nombre: str, version: str, contrato_crudo: dict[str, Any] | None = None) -> Modelo:
+    def ejecutar(self, usuario: Usuario, nombre: str, version: str,
+                 contrato_crudo: dict[str, Any] | None = None) -> Modelo:
         prefix = prefijo_de(self._prefijo, nombre, version)
         crudo = contrato_crudo if contrato_crudo is not None else self._catalogo.leer_contrato(prefix)
         try:
@@ -122,8 +128,10 @@ class PublicarModelo:
         # El alta va primero porque es la que puede dar 409: así no escribimos en
         # S3 para después rechazar el pedido. Nada se persiste hasta el guardar.
         if existente is None:
-            modelo = Modelo.publicar(contrato, prefix, ahora)
+            modelo = Modelo.publicar(contrato, prefix, ahora, publicado_por=usuario.sub)
         else:
+            if contrato_crudo is not None:
+                existente.verificar_autor(usuario)          # SinPermiso → 403, antes de escribir en S3
             existente.republicar(contrato, ahora)
             modelo = existente
 

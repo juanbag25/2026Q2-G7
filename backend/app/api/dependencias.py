@@ -7,6 +7,7 @@ son lo que reciben los routers. Los tests reemplazan estas funciones con
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import Depends, Request
@@ -139,3 +140,12 @@ def usuario_actual(request: Request, verificador: VerificadorTokens | None = Dep
     if tipo.lower() != "bearer" or not token.strip():
         raise NoAutenticado("falta el token: ingresá de nuevo")
     return verificador.verificar(token.strip())
+
+
+def exigir_grupos(*grupos: str) -> Callable[..., Usuario]:
+    """Para el `dependencies=` de un router: sin token, 401; sin ninguno de `grupos`, 403
+    `sin_permiso`. Sin Cognito, el anónimo trae todos los grupos y pasa (Usuario.anonimo)."""
+    def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+        usuario.exigir(grupos)
+        return usuario
+    return dependencia

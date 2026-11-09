@@ -11,6 +11,16 @@ from app.dominio.errores import NoEncontrado, ServicioNoDisponible
 from app.dominio.estudio import Estudio, ObjetoAlmacenado
 from app.dominio.modelo import Modelo
 from app.dominio.trabajo import Trabajo
+from app.dominio.usuario import ADMIN_INSTITUCION, ADMIN_PLATAFORMA, MEDICO, PUBLICADOR, Usuario
+
+# Cuentas de prueba, una por rol (y dos donde importa quién es el dueño).
+MEDICO_A = Usuario("sub-medico-a", (MEDICO,))
+MEDICO_B = Usuario("sub-medico-b", (MEDICO,))
+INSTITUCION = Usuario("sub-institucion", (ADMIN_INSTITUCION,))
+PUBLICADOR_A = Usuario("sub-publicador-a", (PUBLICADOR,))
+PUBLICADOR_B = Usuario("sub-publicador-b", (PUBLICADOR,))
+ADMIN = Usuario("sub-admin", (ADMIN_PLATAFORMA,))
+SIN_ROL = Usuario("sub-sin-rol")               # la Lambda de post-confirmación no lo pudo poner en un grupo
 
 
 class RelojFijo:

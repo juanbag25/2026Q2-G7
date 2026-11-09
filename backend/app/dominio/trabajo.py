@@ -35,9 +35,10 @@ class Trabajo:
     resultado: dict[str, Any] | None = None
     duracion_ms: int | None = None
     error: str | None = None
+    creado_por: str | None = None      # el `sub` de Cognito; None en las filas anteriores a la 005
 
     @staticmethod
-    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime) -> "Trabajo":
+    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime, creado_por: str) -> "Trabajo":
         return Trabajo(
             id=uuid4(),
             estudio_id=estudio.id,
@@ -46,4 +47,5 @@ class Trabajo:
             intentos=0,
             creado=ahora,
             actualizado=ahora,
+            creado_por=creado_por,
         )

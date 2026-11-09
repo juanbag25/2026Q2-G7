@@ -6,8 +6,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from .contrato import ContratoModelo
-from .errores import Conflicto, EntradaInvalida
+from .errores import Conflicto, EntradaInvalida, SinPermiso
 from .estudio import Estudio
+from .usuario import Usuario
 
 ESTADOS_EVALUACION = ("pendiente", "en_curso", "ok", "error")
 
@@ -48,6 +49,7 @@ class Modelo:
     evaluador_id: str | None = None
     evaluado_en: datetime | None = None
     error: str | None = None
+    publicado_por: str | None = None   # el `sub` de quien lo publicó primero; republicar no lo cambia
     _campos_evaluacion: tuple[str, ...] = field(
         default=("accuracy", "metricas", "conjunto", "conjunto_version", "manifiesto",
                  "evaluador_id", "evaluado_en", "error"),
@@ -55,7 +57,7 @@ class Modelo:
     )
 
     @staticmethod
-    def publicar(contrato: ContratoModelo, s3_prefix: str, ahora: datetime) -> "Modelo":
+    def publicar(contrato: ContratoModelo, s3_prefix: str, ahora: datetime, publicado_por: str) -> "Modelo":
         return Modelo(
             id=uuid4(),
             nombre=contrato.nombre,
@@ -68,7 +70,17 @@ class Modelo:
             estado_evaluacion="pendiente",
             creado=ahora,
             publicado=ahora,
+            publicado_por=publicado_por,
         )
+
+    def verificar_autor(self, usuario: Usuario) -> None:
+        """Cambiarle el contrato a un modelo publicado es cosa de quien lo publicó (o de un admin
+        de plataforma): si no, cualquier publicador podría pisarle las etiquetas a otro. Volver a
+        evaluarlo sin contrato no cambia nada del modelo y no pasa por acá."""
+        if not usuario.es_suyo(self.publicado_por):
+            raise SinPermiso(
+                f"{self.nombre} v{self.version} lo publicó otra cuenta: su contrato solo lo cambia quien lo publicó"
+            )
 
     def republicar(self, contrato: ContratoModelo, ahora: datetime) -> None:
         """Vuelve a poner el modelo en la cola de evaluación, borrando lo anterior."""

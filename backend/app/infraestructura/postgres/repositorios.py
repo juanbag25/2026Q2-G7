@@ -23,7 +23,7 @@ def _float(v: Any) -> float | None:
 
 COLUMNAS_MODELO = """id, nombre, version, tipo_estudio, tarea, etiquetas, s3_prefix, contrato,
     estado_evaluacion, accuracy, metricas, conjunto, conjunto_version, manifiesto,
-    evaluador_id, evaluado_en, error, creado, publicado"""
+    evaluador_id, evaluado_en, error, creado, publicado, publicado_por"""
 
 
 def _fila_a_modelo(f: dict[str, Any]) -> Modelo:
@@ -33,7 +33,7 @@ def _fila_a_modelo(f: dict[str, Any]) -> Modelo:
         estado_evaluacion=f["estado_evaluacion"], accuracy=_float(f["accuracy"]), metricas=f["metricas"],
         conjunto=f["conjunto"], conjunto_version=f["conjunto_version"], manifiesto=f["manifiesto"],
         evaluador_id=f["evaluador_id"], evaluado_en=f["evaluado_en"], error=f["error"],
-        creado=f["creado"], publicado=f["publicado"],
+        creado=f["creado"], publicado=f["publicado"], publicado_por=f["publicado_por"],
     )
 
 
@@ -49,8 +49,8 @@ class RepositorioModelosPostgres:
                 values (%(id)s, %(nombre)s, %(version)s, %(tipo_estudio)s, %(tarea)s, %(etiquetas)s,
                         %(s3_prefix)s, %(contrato)s, %(estado_evaluacion)s, %(accuracy)s, %(metricas)s,
                         %(conjunto)s, %(conjunto_version)s, %(manifiesto)s, %(evaluador_id)s,
-                        %(evaluado_en)s, %(error)s, %(creado)s, %(publicado)s)
-                on conflict (id) do update set
+                        %(evaluado_en)s, %(error)s, %(creado)s, %(publicado)s, %(publicado_por)s)
+                on conflict (id) do update set          -- publicado_por no se pisa: es de quien lo publicó primero
                     actualizado = now(),
                     tipo_estudio = excluded.tipo_estudio, tarea = excluded.tarea,
                     etiquetas = excluded.etiquetas, contrato = excluded.contrato,
@@ -68,7 +68,7 @@ class RepositorioModelosPostgres:
                     "conjunto": m.conjunto, "conjunto_version": m.conjunto_version,
                     "manifiesto": Jsonb(m.manifiesto) if m.manifiesto is not None else None,
                     "evaluador_id": m.evaluador_id, "evaluado_en": m.evaluado_en, "error": m.error,
-                    "creado": m.creado, "publicado": m.publicado,
+                    "creado": m.creado, "publicado": m.publicado, "publicado_por": m.publicado_por,
                 },
             )
 
@@ -106,13 +106,13 @@ class RepositorioModelosPostgres:
 
 # ---- estudio ------------------------------------------------------------------------
 
-COLUMNAS_ESTUDIO = "id, tipo_estudio, s3_key, content_type, tamano_bytes, estado, creado"
+COLUMNAS_ESTUDIO = "id, tipo_estudio, s3_key, content_type, tamano_bytes, estado, creado, creado_por"
 
 
 def _fila_a_estudio(f: dict[str, Any]) -> Estudio:
     return Estudio(id=f["id"], tipo_estudio=f["tipo_estudio"], s3_key=f["s3_key"],
                    content_type=f["content_type"], tamano_bytes=f["tamano_bytes"],
-                   estado=f["estado"], creado=f["creado"])
+                   estado=f["estado"], creado=f["creado"], creado_por=f["creado_por"])
 
 
 class RepositorioEstudiosPostgres:
@@ -124,11 +124,12 @@ class RepositorioEstudiosPostgres:
             conn.execute(
                 f"""
                 insert into estudio ({COLUMNAS_ESTUDIO})
-                values (%(id)s, %(tipo_estudio)s, %(s3_key)s, %(content_type)s, %(tamano_bytes)s, %(estado)s, %(creado)s)
+                values (%(id)s, %(tipo_estudio)s, %(s3_key)s, %(content_type)s, %(tamano_bytes)s, %(estado)s, %(creado)s,
+                        %(creado_por)s)
                 on conflict (id) do update set tamano_bytes = excluded.tamano_bytes, estado = excluded.estado
                 """,
                 {"id": e.id, "tipo_estudio": e.tipo_estudio, "s3_key": e.s3_key, "content_type": e.content_type,
-                 "tamano_bytes": e.tamano_bytes, "estado": e.estado, "creado": e.creado},
+                 "tamano_bytes": e.tamano_bytes, "estado": e.estado, "creado": e.creado, "creado_por": e.creado_por},
             )
 
     def obtener(self, id: UUID) -> Estudio:
@@ -141,13 +142,15 @@ class RepositorioEstudiosPostgres:
 
 # ---- trabajo ------------------------------------------------------------------------
 
-COLUMNAS_TRABAJO = "id, estudio_id, modelo_id, estado, intentos, worker_id, resultado, duracion_ms, error, creado, actualizado"
+COLUMNAS_TRABAJO = ("id, estudio_id, modelo_id, estado, intentos, worker_id, resultado, duracion_ms, error, creado, "
+                    "actualizado, creado_por")
 
 
 def _fila_a_trabajo(f: dict[str, Any]) -> Trabajo:
     return Trabajo(id=f["id"], estudio_id=f["estudio_id"], modelo_id=f["modelo_id"], estado=f["estado"],
                    intentos=f["intentos"], worker_id=f["worker_id"], resultado=f["resultado"],
-                   duracion_ms=f["duracion_ms"], error=f["error"], creado=f["creado"], actualizado=f["actualizado"])
+                   duracion_ms=f["duracion_ms"], error=f["error"], creado=f["creado"], actualizado=f["actualizado"],
+                   creado_por=f["creado_por"])
 
 
 class RepositorioTrabajosPostgres:
@@ -160,7 +163,7 @@ class RepositorioTrabajosPostgres:
                 f"""
                 insert into trabajo ({COLUMNAS_TRABAJO})
                 values (%(id)s, %(estudio_id)s, %(modelo_id)s, %(estado)s, %(intentos)s, %(worker_id)s,
-                        %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s)
+                        %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s, %(creado_por)s)
                 on conflict (id) do update set
                     estado = excluded.estado, intentos = excluded.intentos, worker_id = excluded.worker_id,
                     resultado = excluded.resultado, duracion_ms = excluded.duracion_ms,
@@ -169,7 +172,8 @@ class RepositorioTrabajosPostgres:
                 {"id": t.id, "estudio_id": t.estudio_id, "modelo_id": t.modelo_id, "estado": t.estado,
                  "intentos": t.intentos, "worker_id": t.worker_id,
                  "resultado": Jsonb(t.resultado) if t.resultado is not None else None,
-                 "duracion_ms": t.duracion_ms, "error": t.error, "creado": t.creado, "actualizado": t.actualizado},
+                 "duracion_ms": t.duracion_ms, "error": t.error, "creado": t.creado, "actualizado": t.actualizado,
+                 "creado_por": t.creado_por},
             )
 
     def obtener(self, id: UUID) -> Trabajo:

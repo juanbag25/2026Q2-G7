@@ -7,6 +7,7 @@ from ...dominio.errores import Conflicto, NoEncontrado, ServicioNoDisponible
 from ...dominio.estudio import Estudio
 from ...dominio.modelo import Modelo
 from ...dominio.trabajo import Trabajo
+from ...dominio.usuario import Usuario
 from ..puertos import (
     AlmacenEstudios, ColaInferencias, PeticionInferencia, Reloj, RepositorioEstudios,
     RepositorioModelos, RepositorioTrabajos, TrabajosSinEnviar,
@@ -45,8 +46,11 @@ class EncolarInferencia:
         self._bucket_modelos = bucket_modelos
         self._bucket_estudios = bucket_estudios
 
-    def ejecutar(self, estudio_id: UUID, modelo_id: UUID) -> Trabajo:
+    def ejecutar(self, usuario: Usuario, estudio_id: UUID, modelo_id: UUID) -> Trabajo:
         estudio = self._estudios.obtener(estudio_id)
+        if not usuario.es_suyo(estudio.creado_por):
+            # Antes de tocar nada: ni se confirma la subida ni se crea el trabajo.
+            raise NoEncontrado(f"no existe el estudio {estudio_id}")
         modelo = self._modelos.obtener(modelo_id)
         if estudio.estado != "subido":
             try:
@@ -55,7 +59,7 @@ class EncolarInferencia:
                 raise Conflicto("el archivo del estudio todavía no está en S3; subilo antes de inferir") from None
             self._estudios.guardar(estudio)
         modelo.verificar_compatible(estudio)
-        trabajo = Trabajo.nuevo(estudio, modelo, self._reloj.ahora())
+        trabajo = Trabajo.nuevo(estudio, modelo, self._reloj.ahora(), creado_por=usuario.sub)
         self._trabajos.guardar(trabajo)
         try:
             self._cola.enviar(_peticion(trabajo, modelo, estudio, self._bucket_modelos, self._bucket_estudios))
@@ -66,11 +70,17 @@ class EncolarInferencia:
 
 
 class ConsultarTrabajo:
+    """El trabajo, si es de quien pregunta. El ajeno da el mismo 404 que uno que no existe: tener
+    el UUID no alcanza, y la respuesta no confirma que esté."""
+
     def __init__(self, trabajos: RepositorioTrabajos):
         self._trabajos = trabajos
 
-    def ejecutar(self, id: UUID) -> Trabajo:
-        return self._trabajos.obtener(id)
+    def ejecutar(self, usuario: Usuario, id: UUID) -> Trabajo:
+        trabajo = self._trabajos.obtener(id)
+        if not usuario.es_suyo(trabajo.creado_por):
+            raise NoEncontrado(f"no existe el trabajo {id}")
+        return trabajo
 
 
 class ReenviarPendientes:

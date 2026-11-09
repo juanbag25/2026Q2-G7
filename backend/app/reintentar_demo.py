@@ -7,6 +7,7 @@ from .aplicacion.casos_uso.modelos import PublicarModelo
 from .aplicacion.puertos import PeticionEvaluacion
 from .config import Settings
 from .demo import ConexionPrestada, InicializarModelo, OutboxDemo
+from .dominio.usuario import Usuario
 from .infraestructura.aws import cliente_s3, cliente_sqs
 from .infraestructura.postgres.conexion import crear_pool
 from .infraestructura.postgres.repositorios import RepositorioModelosPostgres
@@ -30,7 +31,7 @@ def reintentar(s, pool, s3, sqs, md):
         outbox = OutboxDemo(conn, md.clave)
         if m.estado_evaluacion == "error":
             PublicarModelo(CatalogoModelosS3(s3, s.bucket_modelos), repo, RelojSistema(),
-                           s.prefijo_modelos, outbox).ejecutar(md.nombre, md.version)
+                           s.prefijo_modelos, outbox).ejecutar(Usuario.plataforma(), md.nombre, md.version)
         else:
             outbox.enviar(PeticionEvaluacion.de(m))
     InicializarModelo(pool, s3, sqs, s, md).ejecutar()
