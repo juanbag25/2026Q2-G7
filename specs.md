@@ -239,6 +239,7 @@ devuelve `index.html` (rutas del lado del cliente).
 | `GET /api/trabajos/{id}` | — | `Trabajo` | `404` |
 | `POST /api/consultas` | `{estudio_id, modelo_ids}` (de 2 a 5) | `202 Consulta` (estado `en_cola`, un trabajo `pendiente` por modelo) | `404` · `409` estudio no subido o modelo sin evaluación `ok` · `422` menos de 2 o más de 5, repetidos, otro tipo de estudio u otras etiquetas |
 | `GET /api/consultas/{id}` | — | `Consulta` con cada modelo y, al terminar, el consenso | `404` |
+| `POST /api/cuenta/tipo` | `{tipo}`: `institucion` o `publicador` | `200 {tipo, grupo}`: el grupo de Cognito en el que quedó la cuenta; para usarlo hay que volver a ingresar | `409` la cuenta ya tiene otro tipo, en Cognito o elegido antes (y siempre sin Cognito) · `422` cualquier otro tipo: médico y admin no se eligen · `502` Cognito no contestó |
 
 Esquemas:
 
@@ -296,13 +297,27 @@ El worker es idempotente por construcción: misma entrada, misma salida, no escr
 ### Quién puede llamar a cada ruta (Entrega 4)
 
 Con Cognito, cada ruta de `/api` salvo `/api/publico/*` y `/api/health` pide el access token
-(`401 no_autenticado` sin él) y una cuenta de alguno de estos grupos (`403 sin_permiso` si no):
+(`401 no_autenticado` sin él) y, salvo `POST /api/cuenta/tipo`, una cuenta de alguno de estos
+grupos (`403 sin_permiso` si no):
 
 | Rutas | Cuentas |
 |-------|---------|
 | `/api/modelos/disponibles` · `/api/modelos/subidas` · `/api/modelos/publicar` | publicador · admin de plataforma |
 | `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` | médico · admin de institución · admin de plataforma |
+| `POST /api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
 | `/api/publico/*` · `/api/health` | cualquiera, sin token |
+
+**El tipo de cuenta.** Quien se registra desde «Ingresar» queda sin grupo y elige una sola vez si
+su cuenta es de una institución (`admin_institucion`) o de un publicador (`publicador`); quien se
+registra por «Registrate como institución / publicador» ya queda en ese grupo. La API decide con
+los grupos que tiene la cuenta en Cognito en ese momento, no con los del token, y guarda la
+elección con el `sub` como clave: de dos elecciones a la vez queda la primera y la otra recibe
+`409`. Repetir la misma no cambia nada. Médico y admin de plataforma no se eligen nunca.
+
+```jsonc
+// 409
+{ "error": "conflicto", "detalle": "tu cuenta ya es de publicador: el tipo se elige una sola vez" }
+```
 
 Además, cada estudio y cada trabajo es de quien lo creó: `POST /api/inferencias` sobre un estudio
 ajeno y `GET /api/trabajos/{id}` de un trabajo ajeno responden el mismo `404` que un id que no
@@ -469,6 +484,19 @@ create table consulta (
 alter table trabajo add column consulta_id uuid references consulta(id);
 ```
 
+El tipo de cuenta (`migraciones/006_tipo_de_cuenta.sql`): lo que eligió cada cuenta que se
+registró desde «Ingresar», con el `sub` de Cognito como clave. Fijarlo es `insert … on conflict
+do nothing` y releer. Los permisos siguen saliendo de los grupos de Cognito: la fila solo impide
+elegir dos veces.
+
+```sql
+create table cuenta (
+  sub      text primary key,
+  tipo     text not null check (tipo in ('institucion', 'publicador')),
+  elegida  timestamptz not null default now()
+);
+```
+
 ## 10. Métricas de evaluación
 
 Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen dorada no trae scikit-learn).
@@ -546,6 +574,12 @@ evaluado.
   probabilidades, el worker que lo corrió y «Coincide» o «Discrepa»; al final la leyenda
   «Herramienta de soporte a la decisión clínica. No reemplaza el criterio médico.»
 
+**Tipo de cuenta** — lo primero que ve, en cualquier ruta, quien se registró desde «Ingresar» y
+todavía no tiene grupo: «¿Tu cuenta es de una institución o de un publicador?», dos tarjetas con
+lo que hace cada una y la aclaración de que los médicos llegan invitados por su institución.
+Elegir guarda el tipo y vuelve a pasar por el login, que trae la cuenta con su rol; si ya tenía
+otro, al volver lo dice arriba. Los demás errores se muestran ahí mismo.
+
 ## 13. Criterios de aceptación
 
 Los ocho se verificaron contra el entorno local con Docker el 2026-09-07. Lo medido:
@@ -577,6 +611,10 @@ apagado, el trabajo hace 3 intentos y termina en `error` sin colgar nada.
    consulta queda `completa` con el consenso, el acuerdo y la marca de revisión prioritaria si el
    acuerdo baja del 70 %. Con un modelo caído queda `parcial` con el consenso de los otros dos.
    Pedir una junta de 1 o de 6 modelos, o con un modelo sin evaluar, se rechaza.
+10. **Tipo de cuenta**: «Ingresar → Sign up» deja la cuenta sin grupo y el sitio pregunta el tipo.
+    Eligiendo institución, la cuenta analiza un estudio; eligiendo publicador, publica un modelo.
+    Una segunda elección distinta responde `409` y la cuenta conserva la primera. Ningún registro
+    queda de publicador sin haberlo elegido.
 
 ## 14. Fuera de alcance (evolución)
 
