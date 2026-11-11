@@ -200,12 +200,26 @@ run "login_de_la_clase" {
     error_message = "El sitio y la Lambda usan el mismo redirect_uri, o Cognito rechaza el canje."
   }
   assert {
-    condition     = keys(jsondecode(aws_s3_object.config_web.content).cognito.clientes) == ["institucion", "publicador"]
-    error_message = "Un cliente por tipo de registro."
+    condition     = keys(jsondecode(aws_s3_object.config_web.content).cognito.clientes) == ["ingreso", "institucion", "publicador"]
+    error_message = "Un cliente por puerta del sitio: «Ingresar» y crear cuenta de institución o de publicador."
   }
   assert {
     condition     = length(aws_cognito_user_group.g) == 4 && aws_cognito_user_pool.ateneo.lambda_config[0].post_confirmation == aws_lambda_function.post_confirmacion.arn
     error_message = "Cuatro grupos y la Lambda de post-confirmación que asigna el grupo."
+  }
+  # Quien se registra desde «Ingresar» elige el tipo en la app: si este mapa nombrara a
+  # ateneo-ingreso, o volviera un grupo por defecto, un médico terminaría de publicador.
+  assert {
+    condition     = jsondecode(aws_lambda_function.post_confirmacion.environment[0].variables.GRUPO_POR_CLIENTE) == { "ateneo-institucion" = "admin_institucion", "ateneo-publicador" = "publicador" }
+    error_message = "Solo los dos clientes de crear cuenta dan grupo al registrarse; ateneo-ingreso no da ninguno."
+  }
+  assert {
+    condition     = length(aws_lambda_function.post_confirmacion.environment[0].variables) == 1
+    error_message = "La Lambda de post-confirmación no tiene grupo por defecto: solo recibe GRUPO_POR_CLIENTE."
+  }
+  assert {
+    condition     = length(aws_apigatewayv2_authorizer.cognito.jwt_configuration[0].audience) == 3
+    error_message = "API Gateway acepta los tokens de los tres clientes."
   }
   assert {
     condition = alltrue([

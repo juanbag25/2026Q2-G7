@@ -9,9 +9,12 @@
 #   5. el sitio los lee de la URL y los guarda en localStorage
 #   6. cada pedido a la API lleva el access token; API Gateway lo valida y el backend también
 #
-# Instituciones y publicadores se registran solos, eligiendo qué son: cada tipo entra por su
-# propio cliente, y la Lambda de post-confirmación pone al usuario en el grupo de ese cliente.
-# Médicos e integrantes llegan por invitación; los admins se crean acá.
+# Instituciones y publicadores se registran solos. Hay un cliente por puerta del sitio: «crear
+# cuenta» de institución y de publicador, cada uno con su grupo (lo pone la Lambda de
+# post-confirmación), e «Ingresar», que no da grupo. El autorregistro es de todo el user pool y
+# el Hosted UI muestra «Sign up» en cualquier cliente: quien se registra desde «Ingresar» queda
+# sin grupo y elige el tipo una sola vez dentro de la app (POST /api/cuenta/tipo). Ningún camino
+# da un grupo por defecto. Médicos e integrantes llegan por invitación; los admins se crean acá.
 
 locals {
   grupos_cognito = {
@@ -21,10 +24,13 @@ locals {
     admin_plataforma  = "Administración de Ateneo"
   }
 
-  # tipo de registro => grupo en el que queda
-  tipos_cuenta = {
-    publicador  = "publicador"
+  # Los clientes del Hosted UI: «Ingresar» y crear cuenta de cada tipo.
+  clientes_cognito = toset(["ingreso", "institucion", "publicador"])
+
+  # cliente => grupo en el que queda quien se registra por él. «ingreso» no está, a propósito.
+  grupo_al_registrarse = {
     institucion = "admin_institucion"
+    publicador  = "publicador"
   }
 }
 
@@ -82,7 +88,7 @@ resource "aws_cognito_user_pool_domain" "ateneo" {
 }
 
 resource "aws_cognito_user_pool_client" "web" {
-  for_each     = local.tipos_cuenta
+  for_each     = local.clientes_cognito
   name         = "ateneo-${each.key}"
   user_pool_id = aws_cognito_user_pool.ateneo.id
 
@@ -116,7 +122,7 @@ locals {
   cognito_emisor  = "https://${aws_cognito_user_pool.ateneo.endpoint}" # iss de los tokens
 }
 
-# --- La Lambda de post-confirmación: pone a cada uno en su grupo -----------------------
+# --- La Lambda de post-confirmación: el grupo de «crear cuenta» -----------------------
 
 data "archive_file" "post_confirmacion" {
   type        = "zip"
@@ -143,8 +149,8 @@ resource "aws_lambda_function" "post_confirmacion" {
 
   environment {
     variables = {
-      GRUPO_POR_CLIENTE = jsonencode({ for tipo, grupo in local.tipos_cuenta : "ateneo-${tipo}" => grupo })
-      GRUPO_POR_DEFECTO = "publicador"
+      # Sin ateneo-ingreso y sin grupo por defecto: un cliente que no está acá no da ninguno.
+      GRUPO_POR_CLIENTE = jsonencode({ for cliente, grupo in local.grupo_al_registrarse : "ateneo-${cliente}" => grupo })
     }
   }
 }
