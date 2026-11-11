@@ -441,7 +441,8 @@ src/
   publicador; cada uno entra por su cliente de Cognito, que da el grupo. «Ingresar» entra por un
   tercero que no da ninguno (con un `config.json` sin ese cliente, por el de publicador).
 - **El tipo de cuenta.** Con sesión y sin grupos, `components/ElegirTipoCuenta.tsx` reemplaza la
-  vista de cualquier ruta por «¿Tu cuenta es de una institución o de un publicador?». Elegir llama
+  vista de cualquier ruta por «¿Tu cuenta es de una institución o de un publicador?», y la barra
+  pierde las secciones y el enlace del logo (queda «Salir»). Elegir llama
   a `POST /api/cuenta/tipo` (`api/cuenta.ts`); con `200` o `409` vuelve a pasar por el login
   (`ingresarDeNuevo`), que no pide la contraseña y trae el token con el grupo, y el `409` deja un
   aviso en `sessionStorage` que se muestra a la vuelta. Cualquier otro error se muestra ahí mismo.

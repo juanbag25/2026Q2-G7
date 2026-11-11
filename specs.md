@@ -577,7 +577,9 @@ evaluado.
 
 **Tipo de cuenta** — lo primero que ve, en cualquier ruta, quien se registró desde «Ingresar» y
 todavía no tiene grupo: «¿Tu cuenta es de una institución o de un publicador?», dos tarjetas con
-lo que hace cada una y la aclaración de que los médicos llegan invitados por su institución.
+lo que hace cada una y la aclaración de que los médicos llegan invitados por su institución. La
+barra no muestra las secciones, porque no hay a dónde ir hasta elegir; queda «Salir», por si se
+registró con otro mail.
 Elegir guarda el tipo y vuelve a pasar por el login, que trae la cuenta con su rol; si ya tenía
 otro, al volver lo dice arriba. Los demás errores se muestran ahí mismo. Antes de preguntar,
 revisa la cuenta: si ya eligió (en otro navegador, o antes de cerrar este), entra con su rol sin
