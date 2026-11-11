@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -250,6 +251,23 @@ class RepositorioConsultasPostgres:
                 f"select {COLUMNAS_TRABAJO} from trabajo where consulta_id = %s order by creado, id", (id,)
             ).fetchall()
         return [_fila_a_trabajo(f) for f in filas]
+
+
+# ---- cuenta (el tipo elegido) -------------------------------------------------------
+
+class RepositorioCuentasPostgres:
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def fijar_tipo(self, sub: str, tipo: str, ahora: datetime) -> str:
+        """El primero que llega fija el tipo; los demás leen ese. Son dos sentencias y no una: en
+        read committed, la segunda ve la fila que otro pedido confirmó mientras el insert esperaba
+        su turno sobre la clave."""
+        with self._pool.connection() as conn:
+            conn.execute("insert into cuenta (sub, tipo, elegida) values (%s, %s, %s) on conflict (sub) do nothing",
+                         (sub, tipo, ahora))
+            fila = conn.execute("select tipo from cuenta where sub = %s", (sub,)).fetchone()
+        return fila["tipo"]
 
 
 # ---- resultados (procesador) --------------------------------------------------------

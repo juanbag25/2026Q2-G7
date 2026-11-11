@@ -313,16 +313,24 @@ def test_lo_publico_no_pide_rol(cliente):
     assert r.status_code == 200
 
 
+# Con token y sin rol, a propósito: es cómo una cuenta sin rol elige el suyo (rutas/cuenta.py).
+SIN_ROL_A_PROPOSITO = {"/api/cuenta/tipo"}
+
+
 def test_toda_ruta_con_token_pide_un_rol(cliente):
     """Una ruta nueva bajo /api que no cuelgue de un router con exigir_grupos queda abierta a
-    cualquier cuenta: este test la encuentra. /api/publico y /api/health son las únicas sin token."""
+    cualquier cuenta: este test la encuentra. /api/publico y /api/health son las únicas sin token,
+    y la elección del tipo de cuenta, la única con token y sin rol."""
     app, _ = cliente
-    abiertas = []
+    abiertas, sin_token = [], []
     for r in app.routes:
         ruta = getattr(r, "path", "")
         if not ruta.startswith("/api/") or ruta.startswith(("/api/publico", "/api/health", "/api/docs", "/api/openapi")):
             continue
         nombres = {getattr(d.call, "__qualname__", "") for d in r.dependant.dependencies}
-        if not any(n.startswith("exigir_grupos.") for n in nombres):
+        if ruta in SIN_ROL_A_PROPOSITO:
+            if "usuario_actual" not in nombres:
+                sin_token.append(ruta)
+        elif not any(n.startswith("exigir_grupos.") for n in nombres):
             abiertas.append(ruta)
-    assert abiertas == []
+    assert abiertas == [] and sin_token == []

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from app.aplicacion.puertos import RefModeloEnBucket, SubidaFirmada
 from app.dominio.consulta import Consulta
-from app.dominio.errores import NoEncontrado, ServicioNoDisponible
+from app.dominio.errores import NoAutenticado, NoEncontrado, ServicioNoDisponible
 from app.dominio.estudio import Estudio, ObjetoAlmacenado
 from app.dominio.modelo import Modelo
 from app.dominio.trabajo import Trabajo
@@ -21,7 +21,8 @@ INSTITUCION = Usuario("sub-institucion", (ADMIN_INSTITUCION,))
 PUBLICADOR_A = Usuario("sub-publicador-a", (PUBLICADOR,))
 PUBLICADOR_B = Usuario("sub-publicador-b", (PUBLICADOR,))
 ADMIN = Usuario("sub-admin", (ADMIN_PLATAFORMA,))
-SIN_ROL = Usuario("sub-sin-rol")               # la Lambda de post-confirmación no lo pudo poner en un grupo
+# Se registró desde «Ingresar» y todavía no eligió el tipo. Su username de Cognito no es el sub.
+SIN_ROL = Usuario("sub-sin-rol", username="usuario-sin-rol")
 
 
 class RelojFijo:
@@ -161,3 +162,46 @@ class ColaFalsa:
         if self.caida:
             raise ServicioNoDisponible("SQS no contesta")
         self.enviados.append(p)
+
+
+class RepoCuentasMemoria:
+    """RepositorioCuentas: el primero que fija el tipo de una cuenta gana, como el on conflict do nothing."""
+
+    def __init__(self):
+        self.tipos: dict[str, str] = {}
+        self.elegidas: dict[str, datetime] = {}
+
+    def fijar_tipo(self, sub: str, tipo: str, ahora: datetime) -> str:
+        if sub not in self.tipos:
+            self.tipos[sub], self.elegidas[sub] = tipo, ahora
+        return self.tipos[sub]
+
+
+class DirectorioMemoria:
+    """DirectorioCuentas: los grupos de cada username, como en Cognito. Un username que no está es
+    una cuenta borrada (NoAutenticado); agregar un grupo que ya tiene no falla. `caido` hace fallar
+    todo como Cognito sin red, y `falla_al_agregar` solo el alta en el grupo."""
+
+    def __init__(self, cuentas: dict[str, list[str]], caido: bool = False, falla_al_agregar: bool = False):
+        self.cuentas = {u: list(g) for u, g in cuentas.items()}
+        self.caido = caido
+        self.falla_al_agregar = falla_al_agregar
+        self.agregados: list[tuple[str, str]] = []
+
+    def _cuenta(self, username: str) -> list[str]:
+        if self.caido:
+            raise ServicioNoDisponible("Cognito no contesta")
+        if username not in self.cuentas:
+            raise NoAutenticado("tu cuenta ya no existe en Cognito")
+        return self.cuentas[username]
+
+    def grupos_de(self, username: str) -> tuple[str, ...]:
+        return tuple(self._cuenta(username))
+
+    def agregar_a_grupo(self, username: str, grupo: str) -> None:
+        grupos = self._cuenta(username)
+        if self.falla_al_agregar:
+            raise ServicioNoDisponible("Cognito no dejó agregar el grupo")
+        self.agregados.append((username, grupo))
+        if grupo not in grupos:
+            grupos.append(grupo)

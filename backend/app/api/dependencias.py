@@ -13,21 +13,23 @@ from dataclasses import dataclass
 from fastapi import Depends, Request
 
 from ..aplicacion.casos_uso.consultas import ConsultarConsulta, CrearConsulta
+from ..aplicacion.casos_uso.cuenta import ElegirTipoCuenta
 from ..aplicacion.casos_uso.estudios import CrearEstudio
 from ..aplicacion.casos_uso.inferencias import ConsultarTrabajo, EncolarInferencia
 from ..aplicacion.casos_uso.modelos import (
     ConsultarModelo, ListarModelos, ListarModelosDisponibles, PrepararSubidaModelo, PublicarModelo,
 )
-from ..aplicacion.puertos import VerificadorTokens
+from ..aplicacion.puertos import DirectorioCuentas, VerificadorTokens
 from ..config import Settings
 from ..dominio.errores import NoAutenticado
 from ..dominio.usuario import Usuario
-from ..infraestructura.aws import cliente_s3, cliente_sqs
+from ..infraestructura.aws import cliente_cognito, cliente_s3, cliente_sqs
+from ..infraestructura.cognito.directorio import DirectorioCognito
 from ..infraestructura.cognito.verificador import VerificadorCognito
 from ..infraestructura.postgres.conexion import crear_pool
 from ..infraestructura.postgres.repositorios import (
-    RepositorioConsultasPostgres, RepositorioEstudiosPostgres, RepositorioModelosPostgres,
-    RepositorioTrabajosPostgres,
+    RepositorioConsultasPostgres, RepositorioCuentasPostgres, RepositorioEstudiosPostgres,
+    RepositorioModelosPostgres, RepositorioTrabajosPostgres,
 )
 from ..infraestructura.reloj import RelojSistema
 from ..infraestructura.s3.almacen_estudios import AlmacenEstudiosS3
@@ -48,6 +50,7 @@ class Contenedor:
     consultar_trabajo: ConsultarTrabajo
     crear_consulta: CrearConsulta
     consultar_consulta: ConsultarConsulta
+    elegir_tipo_cuenta: ElegirTipoCuenta
     pool: object
     verificador: VerificadorTokens | None      # None = sin Cognito: todos anónimos
 
@@ -74,10 +77,12 @@ def armar(settings: Settings) -> Contenedor:
     inferencias = ColaSqs(sqs, settings.cola_inferencias_url)
     evaluaciones = ColaSqs(sqs, settings.cola_evaluaciones_url)
 
-    verificador = None
+    verificador: VerificadorTokens | None = None
+    directorio: DirectorioCuentas | None = None    # sin Cognito nadie elige tipo: el anónimo ya puede todo
     if settings.cognito_user_pool_id:
         verificador = VerificadorCognito(settings.aws_region, settings.cognito_user_pool_id,
                                          settings.clientes_cognito)
+        directorio = DirectorioCognito(cliente_cognito(settings.aws_region), settings.cognito_user_pool_id)
 
     return Contenedor(
         settings=settings,
@@ -93,6 +98,7 @@ def armar(settings: Settings) -> Contenedor:
         crear_consulta=CrearConsulta(estudios, modelos, consultas, almacen, reloj, inferencias,
                                      settings.bucket_modelos, settings.bucket_estudios),
         consultar_consulta=ConsultarConsulta(consultas, modelos),
+        elegir_tipo_cuenta=ElegirTipoCuenta(RepositorioCuentasPostgres(pool), directorio, reloj),
         pool=pool,
         verificador=verificador,
     )
@@ -142,6 +148,10 @@ def dep_crear_consulta(request: Request) -> CrearConsulta:
 
 def dep_consultar_consulta(request: Request) -> ConsultarConsulta:
     return contenedor(request).consultar_consulta
+
+
+def dep_elegir_tipo_cuenta(request: Request) -> ElegirTipoCuenta:
+    return contenedor(request).elegir_tipo_cuenta
 
 
 def dep_verificador(request: Request) -> VerificadorTokens | None:

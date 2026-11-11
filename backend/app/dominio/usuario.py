@@ -1,8 +1,9 @@
 """Quién hace el pedido. La API lo arma desde el access token de Cognito.
 
-Un grupo de Cognito por rol (terraform/organization/cognito.tf); la Lambda de post-confirmación
-pone a cada uno en el suyo al registrarse. La API aplica la versión mínima de la matriz de la
-spec (E3 §2), en dos lugares:
+Un grupo de Cognito por rol (terraform/organization/cognito.tf). Quien se registra por «crear
+cuenta» queda en el de su tipo (lo pone la Lambda de post-confirmación); quien se registra desde
+«Ingresar», sin grupo hasta que elige el tipo dentro de la app (dominio/cuenta.py). La API aplica
+la versión mínima de la matriz de la spec (E3 §2), en dos lugares:
 
 - **El rol**, ruta por ruta (api/dependencias.py, `exigir_grupos`): los que publican modelos y los
   que consultan estudios. Con el rol equivocado, 403.
@@ -44,10 +45,19 @@ def _enumerar(grupos: Iterable[str], conjuncion: str) -> str:
     return nombres[0] if len(nombres) == 1 else f"{', '.join(nombres[:-1])} {conjuncion} {nombres[-1]}"
 
 
+def describir_grupos(grupos: Iterable[str]) -> str:
+    """Los grupos como los lee una persona: «institución», «médico y publicador»."""
+    return _enumerar(grupos, "y")
+
+
 @dataclass(frozen=True)
 class Usuario:
     sub: str
     grupos: tuple[str, ...] = ()
+    # El claim `username` del access token: lo que piden las llamadas admin de Cognito (los grupos
+    # de rutas/cuenta.py). Con el email como nombre de usuario, Cognito genera uno propio, que no
+    # hay por qué suponer igual al `sub`. None sin Cognito.
+    username: str | None = None
 
     @staticmethod
     def anonimo() -> "Usuario":
@@ -71,8 +81,8 @@ class Usuario:
             return
         # El admin de plataforma entra a todo: nombrarlo en cada mensaje no ayuda a nadie.
         pedidos = [g for g in grupos if g != ADMIN_PLATAFORMA] or list(grupos)
-        tuya = (f"la tuya es de {_enumerar(self.grupos, 'y')}" if self.grupos
-                else "la tuya todavía no tiene un rol asignado: avisale a la administración de Ateneo")
+        tuya = (f"la tuya es de {describir_grupos(self.grupos)}" if self.grupos
+                else "la tuya todavía no tiene un rol: elegí si es de una institución o de un publicador")
         raise SinPermiso(f"esto es para cuentas de {_enumerar(pedidos, 'o')} y {tuya}")
 
     def es_suyo(self, autor: str | None) -> bool:

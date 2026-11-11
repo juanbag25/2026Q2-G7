@@ -37,4 +37,6 @@ class VerificadorCognito:
             raise NoAutenticado("se esperaba un access token")
         if claims["client_id"] not in self._clientes:
             raise NoAutenticado("el token es de otro cliente de Cognito")
-        return Usuario(sub=claims["sub"], grupos=tuple(claims.get("cognito:groups") or ()))
+        # `username` no es el `sub`: con el email como nombre de usuario, Cognito genera uno propio.
+        return Usuario(sub=claims["sub"], grupos=tuple(claims.get("cognito:groups") or ()),
+                       username=claims.get("username"))

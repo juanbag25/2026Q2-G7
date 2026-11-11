@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Con el pool y los clientes, cada pedido a /api/* tiene que traer un access token válido
     # de ese user pool. Sin ellos (docker compose, tests) todos son anónimos.
     cognito_user_pool_id: str | None = None  # us-east-1_XXXXXXXXX
-    cognito_client_ids: str | None = None    # separados por coma: un cliente por tipo de registro
+    cognito_client_ids: str | None = None    # separados por coma: ingreso, institución y publicador
 
     # Solo desarrollo local: host público de MinIO para las URLs prefirmadas
     # (el backend habla con http://minio:9000 pero el navegador ve http://localhost:9000).
