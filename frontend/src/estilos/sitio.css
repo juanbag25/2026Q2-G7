@@ -96,7 +96,9 @@
   color: var(--oscuro-tinta);
 }
 
+/* Siempre en la última columna, haya menú o no: mientras se elige el tipo de cuenta no hay. */
 .barra-fin {
+  grid-column: -2 / -1;
   justify-self: end;
   display: flex;
   align-items: center;

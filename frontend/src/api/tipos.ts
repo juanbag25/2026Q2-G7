@@ -117,6 +117,53 @@ export interface Trabajo {
   actualizado: string;
 }
 
+// ---- la junta ----------------------------------------------------------------
+
+export interface SolicitudConsulta {
+  estudio_id: string;
+  /** De 2 a 5 modelos distintos, evaluados y del tipo del estudio. */
+  modelo_ids: string[];
+}
+
+/** en_cola → procesando → completa | parcial (alguno falló) | error (fallaron todos). */
+export type EstadoConsulta = "en_cola" | "procesando" | "completa" | "parcial" | "error";
+
+/** Con qué métrica verificada pesa el modelo en el consenso. */
+export interface PesoModelo {
+  metrica: "auc" | "accuracy";
+  valor: number;
+}
+
+/** El trabajo de un modelo dentro de la junta. */
+export interface InferenciaJunta extends Trabajo {
+  modelo: { id: string; nombre: string; version: string; nombre_visible: string | null };
+  /** null: el modelo perdió su métrica verificada (lo están re-evaluando) y no vota. */
+  peso: PesoModelo | null;
+  /** Coincide con el consenso; null mientras no hay consenso o si no votó. */
+  coincide: boolean | null;
+}
+
+export interface Consenso {
+  prediccion: string;
+  probabilidades: Record<string, number>;
+  /** Parte del peso total de los modelos que coinciden con el consenso, 0..1. */
+  acuerdo: number;
+  revision_prioritaria: boolean;
+  umbral_acuerdo: number;
+  votos: number;
+}
+
+export interface Consulta {
+  id: string;
+  estudio_id: string;
+  creada: string;
+  estado: EstadoConsulta;
+  /** Sale cuando terminaron todos y al menos dos anduvieron. */
+  consenso: Consenso | null;
+  /** El de más peso primero. */
+  inferencias: InferenciaJunta[];
+}
+
 export interface Salud {
   ok: boolean;
   instancia: string;

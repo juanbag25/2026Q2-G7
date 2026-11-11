@@ -211,7 +211,7 @@ resource "aws_s3_object" "config_web" {
     api = local.url_api
     cognito = {
       dominio  = local.cognito_dominio
-      clientes = { for tipo, c in aws_cognito_user_pool_client.web : tipo => c.id }
+      clientes = { for cliente, c in aws_cognito_user_pool_client.web : cliente => c.id } # ingreso, institucion, publicador
       callback = local.url_callback
       logout   = local.url_logout
     }

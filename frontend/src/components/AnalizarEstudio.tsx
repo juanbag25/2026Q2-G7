@@ -1,7 +1,11 @@
 import { useState } from "react";
 import type { Modelo } from "../api/tipos";
+import { Enlace, rutaDeJunta } from "../enrutador";
+import { nombreTipo } from "../utilidades/metricas";
 import { useInferencia } from "../hooks/useInferencia";
 import { useSesion } from "../hooks/useSesion";
+import { tuCuenta } from "../utilidades/roles";
+import AvisoCuenta from "./AvisoCuenta";
 import CargadorImagen from "./CargadorImagen";
 import EstadoTrabajo from "./EstadoTrabajo";
 import { Flecha } from "./Navegacion";
@@ -10,7 +14,7 @@ import ResultadoInferencia from "./ResultadoInferencia";
 
 /** Subir un estudio y analizarlo con este modelo. Vive en la columna de la ficha. */
 export default function AnalizarEstudio({ modelo }: { modelo: Modelo }) {
-  const { sesion, conLogin } = useSesion();
+  const { sesion, conLogin, puedeConsultar } = useSesion();
   const inferencia = useInferencia();
   const [archivo, setArchivo] = useState<File | null>(null);
 
@@ -26,6 +30,20 @@ export default function AnalizarEstudio({ modelo }: { modelo: Modelo }) {
       <aside className="panel panel-analizar">
         {cabecera}
         <PideIngreso compacto texto="Ingresá con tu cuenta de institución para analizar estudios con este modelo." />
+      </aside>
+    );
+  }
+
+  // Un publicador ve la ficha y la evaluación, pero no analiza estudios: la API le contestaría 403.
+  if (!puedeConsultar) {
+    return (
+      <aside className="panel panel-analizar">
+        {cabecera}
+        <AvisoCuenta
+          compacto
+          titulo="Analizar estudios es para cuentas de institución o de médico"
+          texto={`${tuCuenta(sesion?.grupos ?? [])} Desde acá podés ver cómo rindió el modelo en su evaluación.`}
+        />
       </aside>
     );
   }
@@ -95,6 +113,14 @@ export default function AnalizarEstudio({ modelo }: { modelo: Modelo }) {
         <button type="button" className="pildora pildora-borde ancha" onClick={() => elegir(null)}>
           Analizar otro estudio
         </button>
+      )}
+
+      {modelo.estado_evaluacion === "ok" && (
+        <p className="ayuda">
+          ¿Querés más de una opinión?{" "}
+          <Enlace a={rutaDeJunta({ con: modelo.id })}>Consultá a una junta</Enlace> con este y otros modelos de{" "}
+          {nombreTipo(modelo.tipo_estudio)}: cada uno analiza la imagen y el informe marca si coinciden.
+        </p>
       )}
 
       <p className="letra-chica">

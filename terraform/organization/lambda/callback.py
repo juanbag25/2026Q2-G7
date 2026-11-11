@@ -4,8 +4,9 @@ GET /callback?code=…&state=…  Canjea el código por los tokens en el endpoin
                               Cognito, con el secreto del cliente, y redirige al sitio con los
                               tokens en el fragmento: http://<sitio>/#access_token=…&id_token=…
                               El fragmento no viaja al servidor: S3 nunca lo ve ni lo registra.
-                              Hay un cliente por tipo de cuenta; el sitio pone el tipo al
-                              principio del state ("institucion.<al azar>").
+                              Hay un cliente por puerta del sitio (ingreso, institucion,
+                              publicador); el sitio pone el suyo al principio del state
+                              ("ingreso.<al azar>"). Sin uno conocido no canjea: no adivina.
 GET /logout                   Cognito ya cerró su sesión; vuelve al sitio.
 
 Si algo falla, redirige igual al sitio con #error=… para que la pantalla lo muestre. Nunca
@@ -26,7 +27,7 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 DOMINIO = os.environ["COGNITO_DOMINIO"]       # https://ateneo-xxx.auth.us-east-1.amazoncognito.com
-CLIENTES = json.loads(os.environ["CLIENTES"])  # {"publicador": {"id": …, "secreto": …}, "institucion": …}
+CLIENTES = json.loads(os.environ["CLIENTES"])  # {"ingreso": {"id": …, "secreto": …}, "institucion": …, "publicador": …}
 URL_CALLBACK = os.environ["URL_CALLBACK"]     # la misma que mandó el sitio a /oauth2/authorize
 URL_SITIO = os.environ["URL_SITIO"].rstrip("/")
 
@@ -39,9 +40,11 @@ def _al_sitio(**fragmento: str) -> dict:
     return _redirigir(f"{URL_SITIO}/#{urllib.parse.urlencode(fragmento)}")
 
 
-def _cliente(estado: str) -> dict:
-    """El cliente con el que el sitio pidió el código: el tipo de cuenta va antes del primer punto."""
-    return CLIENTES.get(estado.split(".", 1)[0]) or CLIENTES["publicador"]
+def _cliente(estado: str) -> dict | None:
+    """El cliente con el que el sitio pidió el código: va antes del primer punto del state. Si no
+    es uno conocido, None: un código se canjea solo con el cliente que lo pidió, así que probar
+    con otro (antes, el de publicador) fallaría igual."""
+    return CLIENTES.get(estado.split(".", 1)[0])
 
 
 def _canjear(codigo: str, cliente: dict) -> dict:
@@ -77,8 +80,14 @@ def handler(evento: dict, _contexto) -> dict:
     if not codigo:
         return _al_sitio(error="sin_codigo", error_description="Cognito no mandó el código", state=estado)
 
+    cliente = _cliente(estado)
+    if cliente is None:
+        log.warning("el state no nombra un cliente conocido")
+        return _al_sitio(error="cliente_desconocido", error_description="El ingreso no empezó desde el sitio",
+                         state=estado)
+
     try:
-        tokens = _canjear(codigo, _cliente(estado))
+        tokens = _canjear(codigo, cliente)
     except urllib.error.HTTPError as e:
         # 400 invalid_grant: el código ya se usó, venció (5 min) o el redirect_uri no coincide.
         try:

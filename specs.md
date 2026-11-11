@@ -30,9 +30,10 @@ de `terraform/`) soporta el producto:
 2. **Inferir una imagen.** Un usuario sube una imagen médica desde el navegador, la api encola un
    trabajo, un worker lo procesa y la pantalla muestra la predicción.
 
-**No es un MVP.** Hay login con Cognito, pero no permisos por rol, ni juntas de varios modelos, ni
-facturación. Lo que sí hay, de punta a punta, es el camino del publicador —subir el ONNX y su
-contrato desde la pantalla— y el del usuario clínico. El resto queda en §14 como evolución.
+**No es un MVP.** Hay login con Cognito, permisos por rol y por autoría (§6, «Quién puede
+llamar a cada ruta») y juntas de varios modelos (§5.4), pero no organizaciones ni facturación. Lo
+que sí hay, de punta a punta, es el camino del publicador —subir el ONNX y su contrato desde la
+pantalla— y el del usuario clínico. El resto queda en §14 como evolución.
 
 ## 2. Decisiones tomadas
 
@@ -212,6 +213,33 @@ navegador ─ GET /api/trabajos/{id} cada 1,5 s ─► api ─► la fila: estad
    probabilidades por clase, el worker que atendió (el hostname de la tarea), la duración y la
    cantidad de intentos.
 
+### 5.4 Consultar a una junta de modelos
+
+Lo que da el nombre al producto: varios modelos opinan sobre el mismo estudio y un informe marca
+si coinciden (spec funcional F8 y §6.5; por ahora, solo clasificación).
+
+1. En `/junta` el usuario elige el tipo de estudio y de **2 a 5 modelos distintos** de ese tipo,
+   todos con la evaluación terminada (`estado_evaluacion = ok`).
+2. Sube la imagen **una sola vez**, igual que en §5.3 (`POST /api/estudios` y el `presigned POST`).
+3. `POST /api/consultas {estudio_id, modelo_ids}`: el backend confirma la subida, valida la junta
+   entera, guarda la consulta con **un trabajo `pendiente` por modelo** y deja un mensaje por
+   trabajo en `inferencias`. Responde `202`. Los modelos corren en paralelo, en los workers que
+   haya; worker, procesador y colas no cambian.
+4. La UI hace polling de `GET /api/consultas/{id}`: cada modelo muestra su resultado apenas llega.
+   Cuando terminaron todos y al menos dos anduvieron, arriba aparece el **informe de consenso**:
+   - **peso** de cada modelo = su métrica verificada (el AUC si el evaluador lo midió; si no, la
+     accuracy);
+   - **consenso** = promedio de las probabilidades ponderado por esos pesos → la etiqueta de mayor
+     probabilidad;
+   - **acuerdo** = parte del peso total que suman los modelos que coinciden con el consenso;
+   - **revisión prioritaria** si el acuerdo es menor al 70 %, destacada arriba del informe.
+5. Si algún modelo falla, la consulta queda `parcial` y el consenso se arma con los que
+   anduvieron; con uno solo no hay consenso, y si fallan todos queda en `error`. El resultado
+   cierra con «Herramienta de soporte a la decisión clínica. No reemplaza el criterio médico.»
+
+Nada de la junta se guarda aparte: el estado y el consenso se calculan al leer, con los trabajos
+y las métricas de cada modelo.
+
 ## 6. API del backend
 
 Prefijo `/api`. JSON en UTF-8. Errores con `{ "error": "codigo", "detalle": "texto" }`.
@@ -235,6 +263,10 @@ de `/api` devuelve `index.html` (rutas del lado del cliente).
 | `POST /api/estudios` | sí | `{tipo_estudio, nombre_archivo, content_type, tamano_bytes}` | `201 {estudio_id, subida: {url, campos}}` | `422` MIME o tamaño no permitido |
 | `POST /api/inferencias` | sí | `{estudio_id, modelo_id}` | `202 Trabajo` (estado `pendiente`) | `404` · `409` estudio no subido · `422` tipo de estudio distinto |
 | `GET /api/trabajos/{id}` | sí | — | `Trabajo` | `404` |
+| `POST /api/consultas` | sí | `{estudio_id, modelo_ids}` (de 2 a 5) | `202 Consulta` (estado `en_cola`, un trabajo `pendiente` por modelo) | `404` · `409` estudio no subido o modelo sin evaluación `ok` · `422` menos de 2 o más de 5, repetidos, otro tipo de estudio u otras etiquetas |
+| `GET /api/consultas/{id}` | sí | — | `Consulta` con cada modelo y, al terminar, el consenso | `404` |
+| `GET /api/cuenta/tipo` | sí | — | `{tipo, grupos}`: los grupos que la cuenta tiene en Cognito ahora, que pueden no ser los del token, y el tipo que les corresponde (`null` si todavía no eligió, o si es de médico o de admin) | `502` Cognito no contestó |
+| `POST /api/cuenta/tipo` | sí | `{tipo}`: `institucion` o `publicador` | `200 {tipo, grupo}`: el grupo de Cognito en el que quedó la cuenta; para usarlo hay que volver a ingresar | `409` la cuenta ya tiene otro tipo, en Cognito o elegido antes (y siempre sin Cognito) · `422` cualquier otro tipo: médico y admin no se eligen · `502` Cognito no contestó |
 
 El catálogo vive bajo `/api/publico/` porque es el único prefijo que API Gateway deja pasar sin
 token: nada que cuelgue de ahí pide identidad ni depende de quién pregunta.
@@ -269,6 +301,21 @@ Esquemas:
   "error": null, "creado": "…", "actualizado": "…" }
 ```
 
+```jsonc
+// Consulta (la junta)
+{ "id": "uuid", "estudio_id": "uuid", "creada": "…",
+  "estado": "completa",                      // en_cola | procesando | completa | parcial | error
+  "consenso": { "prediccion": "PNEUMONIA",   // null hasta que terminan todos, o con menos de 2 ok
+                "probabilidades": { "NORMAL": 0.36, "PNEUMONIA": 0.64 },
+                "acuerdo": 0.67, "revision_prioritaria": true, "umbral_acuerdo": 0.7, "votos": 3 },
+  "inferencias": [                           // un Trabajo por modelo, el de más peso primero, más:
+    { "...": "los campos de Trabajo",
+      "modelo": { "id": "uuid", "nombre": "torax-rx-neumonia", "version": "1.0.0",
+                  "nombre_visible": "Mediscan · Neumonía" },
+      "peso": { "metrica": "auc", "valor": 0.995 },   // null si el modelo perdió su métrica
+      "coincide": true } ] }                 // null mientras no hay consenso
+```
+
 ### Los mensajes de las colas
 
 El worker y el evaluador no tienen API: leen su cola y publican en `resultados`.
@@ -294,6 +341,44 @@ El worker y el evaluador no tienen API: leen su cola y publican en `resultados`.
 
 Worker y evaluador no escriben en la base. El procesador aplica cada resultado solo si el registro
 sigue `pendiente` o `en_curso`, así que un mensaje repetido o tardío no cambia nada.
+
+### Quién puede llamar a cada ruta (Entrega 4)
+
+Con Cognito, cada ruta de `/api` salvo `/api/publico/*` y `/api/health` pide el access token
+(`401 no_autenticado` sin él) y, salvo `/api/cuenta/tipo`, una cuenta de alguno de estos grupos
+(`403 sin_permiso` si no):
+
+| Rutas | Cuentas |
+|-------|---------|
+| `/api/modelos/disponibles` · `/api/modelos/subidas` · `/api/modelos/publicar` | publicador · admin de plataforma |
+| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` | médico · admin de institución · admin de plataforma |
+| `GET` y `POST /api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
+| `/api/publico/*` · `/api/health` | cualquiera, sin token |
+
+**El tipo de cuenta.** Quien se registra desde «Ingresar» queda sin grupo y elige una sola vez si
+su cuenta es de una institución (`admin_institucion`) o de un publicador (`publicador`); quien se
+registra por «Registrate como institución / publicador» ya queda en ese grupo. La API decide con
+los grupos que tiene la cuenta en Cognito en ese momento, no con los del token, y guarda la
+elección con el `sub` como clave: de dos elecciones a la vez queda la primera y la otra recibe
+`409`. Repetir la misma no cambia nada. Médico y admin de plataforma no se eligen nunca.
+
+```jsonc
+// 409
+{ "error": "conflicto", "detalle": "tu cuenta ya es de publicador: el tipo se elige una sola vez" }
+```
+
+Además, cada estudio y cada trabajo es de quien lo creó: `POST /api/inferencias` sobre un estudio
+ajeno y `GET /api/trabajos/{id}` de un trabajo ajeno responden el mismo `404` que un id que no
+existe; el admin de plataforma ve todo. `POST /api/modelos/publicar` con `contrato` sobre un modelo
+que publicó otra cuenta responde `403`; sin `contrato` (volver a evaluarlo) lo puede cualquiera que
+publica.
+
+```jsonc
+// 403
+{ "error": "sin_permiso", "detalle": "esto es para cuentas de publicador y la tuya es de institución" }
+```
+
+Sin Cognito (local, tests) no hay control de acceso: el usuario anónimo pasa por todo.
 
 ## 7. Contrato del modelo
 
@@ -435,6 +520,36 @@ create table trabajo (                        -- el estado de cada inferencia; l
 create index trabajo_pendientes on trabajo (estado, actualizado);
 ```
 
+`migraciones/005_autoria.sql` agrega de quién es cada fila: `creado_por text` en `estudio` y
+`trabajo`, y `publicado_por text` en `modelo`, con el `sub` de Cognito (`plataforma` para los
+modelos de la demo). Las filas anteriores quedan en `null` y solo las ve un admin de plataforma.
+Una junta es de quien creó sus trabajos: la consulta no guarda autor propio.
+
+La junta (`migraciones/004_consultas.sql`): una consulta agrupa los trabajos de sus modelos. Un
+trabajo sin consulta es una consulta individual.
+
+```sql
+create table consulta (
+  id          uuid primary key default gen_random_uuid(),
+  estudio_id  uuid not null references estudio(id),
+  creada      timestamptz not null default now()
+);
+alter table trabajo add column consulta_id uuid references consulta(id);
+```
+
+El tipo de cuenta (`migraciones/006_tipo_de_cuenta.sql`): lo que eligió cada cuenta que se
+registró desde «Ingresar», con el `sub` de Cognito como clave. Fijarlo es `insert … on conflict
+do nothing` y releer. Los permisos siguen saliendo de los grupos de Cognito: la fila solo impide
+elegir dos veces.
+
+```sql
+create table cuenta (
+  sub      text primary key,
+  tipo     text not null check (tipo in ('institucion', 'publicador')),
+  elegida  timestamptz not null default now()
+);
+```
+
 ## 10. Métricas de evaluación
 
 Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen `ml` no trae scikit-learn).
@@ -461,6 +576,7 @@ de los casos falla, la evaluación termina en `error`.
 | Límites de entrada | Imagen ≤ 20 MB, MIME `image/png` o `image/jpeg`; modelo ≤ 512 MB. |
 | Rutas del cliente | El bucket web devuelve `index.html` como documento de error; en local lo hace la api. |
 | Autenticación | Cognito. API Gateway valida el access token en todo `/api/*` salvo `/api/health` y `/api/publico/*`, y el backend lo vuelve a validar (`Depends(usuario_actual)`). |
+| Permisos por rol y por autoría | Cada router pide los grupos de Cognito que admite (`403`); un estudio o un trabajo ajeno da `404`. Ver §6, «Quién puede llamar a cada ruta». |
 
 ## 12. Pantallas
 
@@ -499,6 +615,26 @@ nueve por página; los evaluados primero, del mejor al peor. Cada tarjeta lleva 
 **Barra y pie**: las secciones, el tema claro u oscuro, la sesión («Ingresar», o el email y
 «Salir») y el estado de la API (`/api/health`, con la tarea que atendió).
 
+**Junta (`/junta`)** — se llega desde la barra, desde el catálogo y desde la ficha de un modelo
+evaluado.
+- **Armá la junta**: tipo de estudio, los modelos del tipo con la métrica con que pesa cada uno
+  (se eligen de 2 a 5; los que no terminaron la evaluación aparecen deshabilitados), la imagen y
+  **Consultar a la junta**, con el mismo indicador de pasos que una consulta individual.
+- **El informe**: arriba el consenso —la etiqueta, el acuerdo contra la marca del 70 % y
+  «Revisión prioritaria» o «Los modelos coinciden»—; debajo cada modelo con su predicción, sus
+  probabilidades, el worker que lo corrió y «Coincide» o «Discrepa»; al final la leyenda
+  «Herramienta de soporte a la decisión clínica. No reemplaza el criterio médico.»
+
+**Tipo de cuenta** — lo primero que ve, en cualquier ruta, quien se registró desde «Ingresar» y
+todavía no tiene grupo: «¿Tu cuenta es de una institución o de un publicador?», dos tarjetas con
+lo que hace cada una y la aclaración de que los médicos llegan invitados por su institución. La
+barra no muestra las secciones, porque no hay a dónde ir hasta elegir; queda «Salir», por si se
+registró con otro mail.
+Elegir guarda el tipo y vuelve a pasar por el login, que trae la cuenta con su rol; si ya tenía
+otro, al volver lo dice arriba. Los demás errores se muestran ahí mismo. Antes de preguntar,
+revisa la cuenta: si ya eligió (en otro navegador, o antes de cerrar este), entra con su rol sin
+preguntar.
+
 ## 13. Criterios de aceptación
 
 Los criterios de la Entrega 2 (con `eval-1`, `asg-inf` y el ALB interno) se verificaron en local el
@@ -527,13 +663,29 @@ del ensayo de la Entrega 4.
 7. Volver a apretar **Publicar** sobre un modelo `en_curso` responde `409`; sobre uno `ok` lo
    re-evalúa.
 8. Sin token, todo `/api/*` salvo `/api/health` y `/api/publico/*` responde `401` en API Gateway.
-9. Toda la aplicación corre en local con `docker compose up` (Postgres, MinIO y ElasticMQ), sin
-   credenciales de AWS.
+9. **Permisos**: con una cuenta de publicador, `POST /api/estudios` y `POST /api/consultas`
+   responden `403`; con una de institución, `POST /api/modelos/publicar` responde `403`. El
+   estudio o el trabajo de otra cuenta da `404`, y el admin de plataforma lo ve.
+10. **Junta**: con los tres modelos de `torax-rx` y una radiografía, `POST /api/consultas` responde
+    `202` con tres trabajos `pendiente` y deja tres mensajes en `inferencias`; al terminar, la
+    consulta queda `completa` con el consenso, el acuerdo y la marca de revisión prioritaria si el
+    acuerdo baja del 70 %. Con un modelo caído queda `parcial` con el consenso de los otros dos.
+    Pedir una junta de 1 o de 6 modelos, o con un modelo sin evaluar, se rechaza.
+11. **Tipo de cuenta**: «Ingresar → Sign up» deja la cuenta sin grupo y el sitio pregunta el tipo.
+    Eligiendo institución, la cuenta analiza un estudio; eligiendo publicador, publica un modelo.
+    Una segunda elección distinta responde `409` y la cuenta conserva la primera. Entrando después
+    desde otro navegador no vuelve a preguntar. Ningún registro queda de publicador sin haberlo
+    elegido.
+12. Toda la aplicación corre en local con `docker compose up` (Postgres, MinIO y ElasticMQ), sin
+    credenciales de AWS.
 
 ## 14. Fuera de alcance (evolución)
 
-- Juntas de varios modelos y consenso.
-- Permisos por rol, organizaciones (instituciones y publicadores), planes, consumo y facturación.
+- Consenso de juntas para segmentación y detección (la de clasificación está en §5.4).
+- Permisos finos: organizaciones (que el admin de institución vea lo de sus médicos), separar lo
+  que hace el médico de lo que hace el admin de institución, cuentas pendientes de aprobación y un
+  admin de plataforma que vea solo metadatos y agregados.
+- Planes, consumo y facturación.
 - DICOM y de-identificación en origen.
 - Conector con los sistemas del centro (PACS, HIS, FHIR).
 - Evaluación única y firmada por (modelo, conjunto, versión); historial de evaluaciones;

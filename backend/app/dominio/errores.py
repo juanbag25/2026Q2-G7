@@ -26,6 +26,12 @@ class NoAutenticado(ErrorDominio):
     codigo = "no_autenticado"
 
 
+class SinPermiso(ErrorDominio):
+    """El token es válido pero la cuenta no tiene el rol de esta acción (un publicador que
+    consulta un estudio, una institución que publica un modelo)."""
+    codigo = "sin_permiso"
+
+
 class ServicioNoDisponible(ErrorDominio):
     """Fallo transitorio de un servicio externo (worker sin respuesta). Se reintenta."""
     codigo = "servicio_no_disponible"

@@ -55,17 +55,17 @@ TP-AWS/
 │   │   ├── reintentar_demo.py   # recuperación manual de un modelo de la demo que falló
 │   │   ├── config.py            # Settings (pydantic-settings) desde variables de entorno
 │   │   ├── dominio/             # entidades y reglas puras; sin FastAPI, sin boto3, sin SQL
-│   │   │   ├── modelo.py · estudio.py · trabajo.py · usuario.py
+│   │   │   ├── modelo.py · estudio.py · trabajo.py · usuario.py · cuenta.py
 │   │   │   ├── contrato.py      # validación de modelo.json (misma que ateneo_ml, ver §7)
 │   │   │   └── errores.py       # NoEncontrado, Conflicto, EntradaInvalida, NoAutenticado, ServicioNoDisponible
 │   │   ├── aplicacion/          # casos de uso; dependen solo de puertos
 │   │   │   ├── puertos.py       # Protocols: repositorios, almacenes, colas, registro de resultados
-│   │   │   └── casos_uso/ modelos.py · estudios.py · inferencias.py · resultados.py
+│   │   │   └── casos_uso/ modelos.py · estudios.py · inferencias.py · resultados.py · cuenta.py
 │   │   ├── infraestructura/     # adaptadores; uno por tecnología
 │   │   │   ├── postgres/        # pool psycopg 3 · repositorios con SQL explícito · migraciones
 │   │   │   ├── s3/              # almacén de estudios (prefirmado) · catálogo de modelos en S3
 │   │   │   ├── sqs/             # ColaSqs: enviar, recibir, borrar
-│   │   │   ├── cognito/         # verificador de access tokens (JWKS del user pool)
+│   │   │   ├── cognito/         # verificador de access tokens (JWKS del user pool) · directorio de grupos
 │   │   │   └── aws.py           # los clientes de boto3
 │   │   └── api/                 # FastAPI: routers, esquemas pydantic, dependencias (DI), errores, sitio
 │   ├── tests/
@@ -138,6 +138,7 @@ Reglas adicionales:
 class RepositorioModelos(Protocol): ...          # guardar · obtener · buscar · listar
 class RepositorioEstudios(Protocol): ...         # guardar · obtener
 class RepositorioTrabajos(Protocol): ...         # guardar · obtener
+class RepositorioConsultas(Protocol): ...        # la junta: guardar(consulta, trabajos) en una transacción · obtener · trabajos_de
 
 class ColaInferencias(Protocol):
     def enviar(self, p: PeticionInferencia) -> None: ...        # ServicioNoDisponible
@@ -158,6 +159,8 @@ class AlmacenEstudios(Protocol): ...             # firmar_subida · describir
 class CatalogoModelosEnBucket(Protocol): ...     # listar · leer_contrato · existe · firmar_subida · …
 class VerificadorTokens(Protocol):
     def verificar(self, token: str) -> Usuario: ...             # NoAutenticado
+class DirectorioCuentas(Protocol): ...           # los grupos en Cognito, por username: grupos_de · agregar_a_grupo
+class RepositorioCuentas(Protocol): ...          # el tipo elegido: fijar_tipo (el primero que llega gana)
 class Reloj(Protocol): ...
 ```
 
@@ -165,9 +168,11 @@ class Reloj(Protocol): ...
 
 ```python
 class PublicarModelo:
-    def ejecutar(self, nombre, version, contrato_crudo=None) -> Modelo:
+    def ejecutar(self, usuario, nombre, version, contrato_crudo=None) -> Modelo:
         contrato = ContratoModelo.desde_json(crudo)                         # EntradaInvalida → 422
-        modelo = existente.republicar(...) if existente else Modelo.publicar(...)   # Conflicto → 409
+        if existente and contrato_crudo is not None:
+            existente.verificar_autor(usuario)                              # SinPermiso → 403
+        modelo = existente.republicar(...) if existente else Modelo.publicar(..., usuario.sub)  # Conflicto → 409
         if contrato_crudo is not None:                                      # recién subido desde la web
             self.catalogo.describir_modelo(prefix)                          # ¿llegó el ONNX?
             self.catalogo.escribir_contrato(prefix, contrato_crudo)
@@ -179,7 +184,8 @@ class PublicarModelo:
             self.modelos.guardar(modelo)
 
 class EncolarInferencia:
-    def ejecutar(self, estudio_id, modelo_id) -> Trabajo:
+    def ejecutar(self, usuario, estudio_id, modelo_id) -> Trabajo:
+        if not usuario.es_suyo(estudio.creado_por): raise NoEncontrado(...) # lo ajeno no existe → 404
         ...                                                                 # confirmar subida, compatibilidad
         self.trabajos.guardar(trabajo)                                      # pendiente
         try:
@@ -189,6 +195,17 @@ class EncolarInferencia:
 
 class AplicarResultado:                                                     # en el procesador
     def ejecutar(self, cuerpo: dict) -> bool: ...                           # MensajeInvalido si no se entiende
+
+class CrearConsulta:                                                        # la junta (§4.6)
+    def ejecutar(self, estudio_id, modelo_ids) -> InformeConsulta:
+        consulta = Consulta.junta(estudio, modelos, ahora)                  # 2 a 5, evaluados, mismo tipo
+        self.consultas.guardar(consulta, consulta.trabajos_para(...))       # una transacción
+        for trabajo, modelo in ...:
+            mandar_a_la_cola(self.cola, trabajo, modelo, ...)               # lo mismo que EncolarInferencia
+
+class ConsultarConsulta:
+    def ejecutar(self, id) -> InformeConsulta:
+        return consulta.informe(trabajos, modelos)                          # estado y consenso, al leer
 ```
 
 Cada decisión de negocio vive en el dominio (`republicar`, `confirmar`, `verificar_compatible`); los
@@ -232,8 +249,8 @@ Los mensajes de `resultados`:
 
 - Routers por recurso; reciben casos de uso por `Depends`. `dependencias.py` es el único módulo
   de la api que importa `infraestructura`.
-- `errores.py`: `NoAutenticado` 401, `NoEncontrado` 404, `Conflicto` 409, `EntradaInvalida` 422,
-  `ServicioNoDisponible` 502.
+- `errores.py`: `NoAutenticado` 401, `SinPermiso` 403, `NoEncontrado` 404, `Conflicto` 409,
+  `EntradaInvalida` 422, `ServicioNoDisponible` 502.
 - `sitio.py`: en local monta el sitio en `/` **después** de los routers y devuelve `index.html` para
   cualquier `404` fuera de `/api`. En AWS el sitio está en S3 y la tarea arranca sin él.
 - `GET /health` (el health check del ALB) sin dependencias ni base; `GET /api/health` agrega el
@@ -247,7 +264,73 @@ Los mensajes de `resultados`:
   valida el access token de `Authorization: Bearer` contra las claves del user pool y devuelve un
   `Usuario` con su `sub` y sus grupos; sin token o con uno inválido, `401 no_autenticado`. API
   Gateway ya lo validó: esta es la segunda capa. Sin esas variables (local, tests), todos son
-  anónimos. La matriz de permisos por rol todavía no se aplica.
+  anónimos, y el anónimo trae todos los grupos: pasa por todo como antes.
+- **Autorización por rol**, en cada router: `dependencies=[Depends(exigir_grupos(*grupos))]`. Sin
+  ninguno de esos grupos, `403 sin_permiso` con un detalle que dice qué cuenta hace falta y cuál es
+  la del usuario. Es la versión mínima de la matriz de la spec (E3 §2), en dos reglas que viven en
+  `dominio/usuario.py`:
+
+  | Rutas | Grupos (`PUBLICAN` / `CONSULTAN`) |
+  |---|---|
+  | `/api/modelos/*` | `publicador`, `admin_plataforma` |
+  | `/api/estudios`, `/api/inferencias`, `/api/trabajos/{id}` | `medico`, `admin_institucion`, `admin_plataforma` |
+  | `/api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
+  | `/api/publico/*`, `/api/health` | sin token |
+
+  Un test recorre las rutas de la app y falla si alguna bajo `/api` (salvo esas dos) no pide rol,
+  o si `/api/cuenta/tipo`, la única excepción con token, deja de pedirlo.
+- **Autoría.** `estudio` y `trabajo` guardan `creado_por`, y `modelo` `publicado_por`: el `sub` de
+  Cognito (migración 005). `CrearEstudio`, `EncolarInferencia` y `PublicarModelo` reciben el
+  `Usuario`. Encolar sobre un estudio ajeno o consultar un trabajo ajeno da el mismo `404` que un id
+  que no existe (tener el UUID no alcanza, y la respuesta no confirma que esté); el admin de
+  plataforma ve todo. Cambiarle el contrato a un modelo publicado solo lo puede quien lo publicó
+  (`403`); volver a evaluarlo sin contrato, cualquiera que publica. Los modelos de la demo los
+  publica `Usuario.plataforma()`. El `sub` no sale en ninguna respuesta.
+- **El tipo de cuenta** (`POST /api/cuenta/tipo`, `aplicacion/casos_uso/cuenta.py`). Quien se
+  registra desde «Ingresar» queda sin grupo (su cliente de Cognito no da ninguno; ver
+  `terraform/README.md`) y elige una vez entre `institucion` → `admin_institucion` y
+  `publicador` → `publicador`; cualquier otro valor, médico y admin incluidos, es `422`
+  (`dominio/cuenta.py`). Para que dos pedidos a la vez no dejen dos grupos, el caso de uso no
+  decide con los grupos del token, que se emitió antes de elegir: (1) lee los de Cognito por el
+  puerto `DirectorioCuentas` (`infraestructura/cognito/directorio.py`, boto3 con `LabRole`): con
+  el mismo grupo no hay nada que hacer, con otro es `409`; (2) fija la elección en la tabla
+  `cuenta` (migración 006) con el `sub` como clave, `insert … on conflict do nothing` y releer:
+  si quedó otro tipo, `409`; (3) recién entonces agrega el grupo, el de la elección guardada
+  aunque conteste `409`, así un alta que se cortó a mitad de camino se completa y después de un
+  `409` el login siempre trae un grupo. Las llamadas admin usan el claim `username` del access
+  token (`Usuario.username`), que no tiene por qué ser el `sub`. Sin Cognito no hay directorio y
+  la ruta contesta `409`: el anónimo ya tiene todos los roles. `GET /api/cuenta/tipo`
+  (`ConsultarTipoCuenta`) devuelve los grupos que la cuenta tiene en Cognito ahora y el tipo que
+  les corresponde: el sitio lo consulta antes de preguntar.
+- La interfaz solo esconde lo que la cuenta no puede hacer (`frontend/src/utilidades/roles.ts`,
+  espejo de las dos reglas); decide el backend.
+
+### 4.6 La junta de modelos
+
+Varios modelos sobre el mismo estudio y un informe de consenso (spec funcional F8 y §6.5, solo
+clasificación). Entra sin tocar worker, evaluador, colas ni Terraform:
+
+- **Una consulta agrupa N trabajos** (`migraciones/004_consultas.sql`: tabla `consulta` y
+  `trabajo.consulta_id`, nulo en las consultas individuales). `POST /api/consultas` valida la
+  junta entera en el dominio (`Consulta.junta`: de 2 a 5 modelos distintos, del tipo del estudio,
+  con las mismas etiquetas y con evaluación `ok`), guarda la consulta y sus trabajos en una sola
+  transacción y deja **un mensaje por trabajo** en `inferencias`, el mismo que manda
+  `EncolarInferencia`. Los modelos corren en paralelo en los workers que haya, y la cola cuenta
+  N mensajes para el escalado. Si la cola no contesta, el reenviador los manda como a cualquier
+  trabajo pendiente.
+- **Nada de la junta se guarda: se calcula al leer.** `GET /api/consultas/{id}` arma el informe
+  con los trabajos y las métricas vigentes de cada modelo (`Consulta.informe`). El procesador
+  sigue aplicando resultados de a uno, sin saber de juntas, y no hay un consenso guardado que se
+  pueda desincronizar.
+- **El consenso es una función pura** (`dominio/consenso.py`). Peso de cada modelo = su métrica
+  verificada (`metricas["auc"]` si el evaluador la midió, si no `accuracy`). Consenso = promedio
+  de las probabilidades ponderado por esos pesos, etiqueta por argmax. Acuerdo = parte del peso
+  total de los modelos cuya predicción coincide con el consenso; **revisión prioritaria** si es
+  menor a 0,70. Un modelo que perdió su métrica (lo volvieron a publicar) muestra su resultado
+  pero no vota.
+- **Estado de la consulta**, derivado de sus trabajos: `en_cola` → `procesando` → `completa`
+  (todos ok), `parcial` (alguno falló y alguno anduvo) o `error` (fallaron todos). El consenso sale
+  cuando terminaron todos y al menos dos votan; con uno solo, ese resultado sin consenso.
 
 ## 5. Worker
 
@@ -366,7 +449,19 @@ src/
 - **Login** (`api/sesion.ts`): el recorrido de la clase, descrito en `terraform/README.md`.
   `cliente.ts` manda el access token en cada pedido y, ante un `401`, descarta la sesión: la sección
   vuelve a pedir el ingreso (`components/PideIngreso.tsx`). Crear cuenta deja elegir institución o
-  publicador; cada uno entra por su cliente de Cognito.
+  publicador; cada uno entra por su cliente de Cognito, que da el grupo. «Ingresar» entra por un
+  tercero que no da ninguno (con un `config.json` sin ese cliente, por el de publicador).
+- **El tipo de cuenta.** Con sesión y sin grupos, `components/ElegirTipoCuenta.tsx` reemplaza la
+  vista de cualquier ruta por «¿Tu cuenta es de una institución o de un publicador?», y la barra
+  pierde las secciones y el enlace del logo (queda «Salir»). Elegir llama
+  a `POST /api/cuenta/tipo` (`api/cuenta.ts`); con `200` o `409` vuelve a pasar por el login
+  (`ingresarDeNuevo`), que no pide la contraseña y trae el token con el grupo, y el `409` deja un
+  aviso en `sessionStorage` que se muestra a la vuelta. Cualquier otro error se muestra ahí mismo.
+  Antes de preguntar consulta `GET /api/cuenta/tipo`: si la cuenta ya tiene grupo en Cognito
+  (eligió en otro navegador, o el token es de antes de elegir), trae un token nuevo en vez de
+  preguntar, una sola vez por vuelta para no quedar dando vueltas (`antesDePreguntar`, en
+  `utilidades/roles.ts`). Además, `sesion.ts` toma la sesión que guarda otra pestaña (evento
+  `storage`) y relee la guardada cuando «atrás» devuelve la página desde memoria (`pageshow`).
 - **Ruteo propio, no react-router.** `enrutador.tsx` es `useSyncExternalStore` sobre
   `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son cuatro rutas
   (`/`, `/modelos`, `/modelos/<id>`, `/publicar`; `/consulta`, de la versión anterior, cae en el
@@ -376,6 +471,19 @@ src/
   para títulos, Source Sans 3 para el cuerpo, IBM Plex Mono para los datos), en tokens de CSS con
   tema claro y oscuro. Las fuentes vienen de Google Fonts con `display=swap` y una pila del sistema
   detrás: si el navegador no las alcanza, el sitio sigue legible.
+
+### 8.1 La junta en la interfaz
+
+- `pages/Junta.tsx` (`/junta`): tipo de estudio → de 2 a 5 modelos evaluados → la imagen, una
+  sola vez → el informe. Se llega desde la barra, desde el catálogo («Consultar en junta», con el
+  tipo filtrado) y desde la ficha de un modelo evaluado (`/junta?con=<id>`, con ese modelo elegido).
+- `hooks/useJunta.ts`: crear el estudio → POST a S3 → `POST /consultas` → polling de
+  `GET /consultas/{id}` cada 1,5 s hasta `completa`, `parcial` o `error`. `api/consultas.ts` es su
+  cliente.
+- `components/SelectorJunta.tsx` (los modelos, con la métrica con que pesa cada uno) y
+  `components/ResultadoJunta.tsx`: arriba el informe de consenso —la predicción, el acuerdo contra
+  la marca del 70 % y la revisión prioritaria destacada—, debajo cada modelo con «coincide» o
+  «discrepa» (reusa `ResultadoInferencia`) y al final la leyenda de soporte a la decisión clínica.
 
 ## 9. Configuración por servicio
 
@@ -406,12 +514,14 @@ tres colas y sus colas de fallidos (`docker/elasticmq.conf`). El sitio lo sirve 
 | Nivel | Qué | Con qué |
 |-------|-----|---------|
 | Dominio | `republicar` (409), `verificar_compatible`, validación de contrato | pytest, sin IO |
-| Casos de uso | orquestación con fakes en memoria; encolar con la cola caída; reenviar y vencer | pytest |
+| Casos de uso | orquestación con fakes en memoria; encolar con la cola caída; reenviar y vencer; autoría (lo ajeno da 404); el tipo de cuenta: primera elección, repetida, distinta (409), grupo ya en Cognito, dos pedidos a la vez y Cognito caído a mitad de camino (`test_cuenta.py`) | pytest |
+| Junta | consenso con números hechos a mano (`test_consenso.py`); crear y leer la junta con fakes, incluida la junta de 3 con un modelo caído y la junta ajena, que da 404 (`test_consultas.py`); rutas y roles (`test_api_consultas.py`) | pytest |
 | Procesador | aplicar cada resultado una sola vez; descartar lo ilegible; no borrar si la base falla | pytest |
 | Worker y evaluador | qué publican y cuándo borran el mensaje; el latido del evaluador | pytest, sin SQS |
 | `ateneo_ml` | preprocesamiento, posprocesamiento, métricas a mano; motor con un ONNX de una capa | pytest + onnxruntime |
-| Adaptadores | SQS con el `Stubber` de botocore; tokens con una clave RSA propia | pytest |
-| API | routers con casos de uso falsos (`dependency_overrides`); 401 sin token | `TestClient` |
+| Adaptadores | SQS y el directorio de Cognito con el `Stubber` de botocore; tokens con una clave RSA propia; la elección del tipo contra Postgres, con pedidos a la vez (optativo, `TEST_DEMO_DATABASE_URL`) | pytest |
+| Lambdas del login | qué grupo da cada cliente al registrarse (ninguno el de «Ingresar», ninguno por defecto) y con qué cliente se canjea el código (`tests/test_lambdas_login.py`) | pytest, Cognito falso |
+| API | routers con casos de uso falsos (`dependency_overrides`); 401 sin token y 403 con el rol equivocado, ruta por ruta; `/api/cuenta/tipo` con token y sin rol | `TestClient` |
 | Infraestructura | la arquitectura de «Ateneo en AWS 2.0» contra un AWS simulado | `terraform test` |
 
 ## 12. Despliegue
@@ -425,13 +535,16 @@ cambios, el plan sale vacío.
 
 | Evolución | Qué cambia | Qué no cambia |
 |-----------|------------|---------------|
-| Matriz de permisos por rol | Cada router pide los grupos que admite; `usuario_actual` ya trae los grupos | Casos de uso, login |
-| Organizaciones y créditos | Tablas nuevas; `EncolarInferencia` reserva y el procesador cobra o libera | Worker, evaluador, colas |
-| Juntas de varios modelos | `EncolarInferencia` crea N trabajos; el procesador calcula el consenso al llegar el último | Worker, evaluador |
+| Matriz de permisos completa (spec E3 §2) | Hoy hay dos reglas por router (`PUBLICAN`, `CONSULTAN`; la junta va con `CONSULTAN`, como una consulta individual) y autoría por `sub` (§4.5). Falta: organizaciones (que el admin de institución vea lo de sus médicos, no solo lo suyo), separar lo que hace el médico de lo que hace el admin de institución, cuentas pendientes de aprobación (403 hasta que un admin las apruebe), y que el admin de plataforma vea solo metadatos y agregados, como pide la spec (hoy ve y usa todo) | `exigir_grupos`, el login, los routers |
+| Organizaciones y créditos | Tablas nuevas; `CrearConsulta` y `EncolarInferencia` reservan y el procesador cobra o libera | Worker, evaluador, colas |
 | Carga de conjuntos desde la app | Un mensaje `ingerir_conjunto` en `evaluaciones` | Evaluador (otro caso de uso), procesador |
 | Historial de evaluaciones | Tabla `evaluacion`; la fila del modelo apunta a la vigente | API pública, UI |
 | DICOM | Un `DecodificadorImagen` más | Preprocesamiento, motor, métricas |
 | Segmentación | Un posprocesador y un calculador de métricas por `tarea` | Motor, worker, evaluador |
+| Consenso de segmentación y detección | Una función por tarea en `dominio/consenso.py` (mapas promediados, WBF), como dice la spec §6.5 | Consulta, cola, worker, API |
+
+La junta de varios modelos estaba en esta tabla y ya no es evolución: está implementada (§4.6),
+con el consenso calculado al leer en vez de en el procesador.
 
 ## Modelos iniciales y selección en la web
 
@@ -455,7 +568,8 @@ modelos de usuarios. Las métricas de todas las tarjetas son las calculadas por 
 La selección sigue siendo catálogo → ficha `/modelos/<id>` → imagen → trabajo de inferencia.
 La ficha y el resultado identifican el modelo. Cada trabajo contiene el ID seleccionado y
 solo ejecuta ese modelo. El worker conserva su caché LRU existente de cuatro sesiones; no
-se agregan workers por modelo, GPU, inferencia en navegador ni votación entre modelos.
+se agregan workers por modelo, GPU ni inferencia en navegador. Para varios modelos sobre la
+misma imagen está la junta (§4.6): sigue siendo un trabajo por modelo.
 
 La recuperación `python -m app.reintentar_demo --nombre <nombre> --version <version>`
 limita sus cambios a una identidad. El comando `tools/esperar_modelo.py` espera todos por

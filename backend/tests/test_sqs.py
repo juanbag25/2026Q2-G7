@@ -16,7 +16,7 @@ from app.config import Settings
 from app.dominio.errores import ServicioNoDisponible
 from app.infraestructura.sqs.colas import ColaSqs
 
-from .fakes import ColaFalsa
+from .fakes import MEDICO_A, ColaFalsa
 from .test_casos_uso import mundo  # noqa: F401 — fixture compartida
 
 URL = "https://sqs.us-east-1.amazonaws.com/123456789012/ateneo-inferencias"
@@ -48,7 +48,7 @@ def _encolar(mundo, cola, modelo=None):
     modelo, estudio = modelo or mundo.publicar(), mundo.crear_estudio()
     caso = EncolarInferencia(mundo.estudios, mundo.modelos, mundo.trabajos, mundo.almacen, mundo.reloj,
                              cola, "b-modelos", "b-estudios")
-    return caso.ejecutar(estudio.id, modelo.id), modelo, estudio
+    return caso.ejecutar(MEDICO_A, estudio.id, modelo.id), modelo, estudio
 
 
 def test_encolar_manda_todo_lo_que_necesita_el_worker(mundo):

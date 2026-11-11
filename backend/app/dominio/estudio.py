@@ -25,10 +25,11 @@ class Estudio:
     tamano_bytes: int | None
     estado: str
     creado: datetime
+    creado_por: str | None = None      # el `sub` de Cognito; None en las filas anteriores a la 005
 
     @staticmethod
     def nuevo(tipo_estudio: str, content_type: str, tamano_bytes: int, max_bytes: int,
-              prefijo: str, ahora: datetime) -> "Estudio":
+              prefijo: str, ahora: datetime, creado_por: str) -> "Estudio":
         if not tipo_estudio or "/" in tipo_estudio:
             raise EntradaInvalida("tipo_estudio inválido")
         if content_type not in MIME_PERMITIDOS:
@@ -44,6 +45,7 @@ class Estudio:
             tamano_bytes=tamano_bytes,
             estado="pendiente_subida",
             creado=ahora,
+            creado_por=creado_por,
         )
 
     def confirmar(self, objeto: ObjetoAlmacenado) -> None:

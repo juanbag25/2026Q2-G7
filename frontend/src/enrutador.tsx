@@ -11,6 +11,7 @@ export type Ruta =
   | { vista: "inicio" }
   | { vista: "modelos" }
   | { vista: "modelo"; id: string }
+  | { vista: "junta" }
   | { vista: "publicar" };
 
 const FICHA = /^\/modelos\/([^/]+)$/;
@@ -20,6 +21,7 @@ export function leerRuta(pathname: string): Ruta {
   const limpia = pathname.replace(/\/+$/, "") || "/";
   if (limpia === "/modelos" || limpia === "/consulta") return { vista: "modelos" };
   if (limpia === "/publicar") return { vista: "publicar" };
+  if (limpia === "/junta") return { vista: "junta" };
   const ficha = FICHA.exec(limpia);
   if (ficha) return { vista: "modelo", id: decodeURIComponent(ficha[1]) };
   return { vista: "inicio" };
@@ -27,6 +29,15 @@ export function leerRuta(pathname: string): Ruta {
 
 export function rutaDeModelo(id: string): string {
   return `/modelos/${encodeURIComponent(id)}`;
+}
+
+/** La junta, con un modelo ya elegido (desde su ficha) o un tipo de estudio (desde el catálogo). */
+export function rutaDeJunta(desde: { con?: string; tipo?: string | null } = {}): string {
+  const q = new URLSearchParams();
+  if (desde.con) q.set("con", desde.con);
+  if (desde.tipo) q.set("tipo", desde.tipo);
+  const texto = q.toString();
+  return texto ? `/junta?${texto}` : "/junta";
 }
 
 const oyentes = new Set<() => void>();

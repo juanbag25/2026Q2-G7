@@ -11,14 +11,19 @@
 /** Quien se registra solo elige qué es; médicos e integrantes llegan por invitación. */
 export type TipoCuenta = "publicador" | "institucion";
 
+/** Las puertas al Hosted UI: «Ingresar» y crear cuenta de cada tipo. */
+export type ClienteCognito = TipoCuenta | "ingreso";
+
 export interface ConfigCognito {
   /** https://<prefijo>.auth.<región>.amazoncognito.com */
   dominio: string;
   /**
-   * Un cliente de Cognito por tipo de registro: la Lambda de post-confirmación ve
-   * por cuál se registró el usuario y lo pone en su grupo.
+   * Un cliente de Cognito por puerta. Los de cada tipo dan su grupo al registrarse: la Lambda
+   * de post-confirmación ve por cuál entró el usuario. El de «Ingresar» no da ninguno: quien se
+   * registra desde ahí elige el tipo dentro de la app. Un config.json anterior al tercer
+   * cliente no trae `ingreso`.
    */
-  clientes: Record<TipoCuenta, string>;
+  clientes: Record<TipoCuenta, string> & { ingreso?: string };
   /** GET /callback de API Gateway: el redirect_uri que canjea la Lambda. */
   callback: string;
   /** GET /logout de API Gateway: rebota al sitio. */
@@ -43,8 +48,17 @@ function esCognito(valor: unknown): valor is ConfigCognito {
     typeof clientes === "object" &&
     clientes !== null &&
     typeof clientes.publicador === "string" &&
-    typeof clientes.institucion === "string"
+    typeof clientes.institucion === "string" &&
+    (clientes.ingreso === undefined || typeof clientes.ingreso === "string")
   );
+}
+
+/**
+ * El cliente del botón «Ingresar»: el suyo, cuyo «Sign up» no da grupo. Con un config.json
+ * anterior al tercer cliente, el de publicador, como antes.
+ */
+export function clienteDeIngreso(cognito: ConfigCognito): ClienteCognito {
+  return cognito.clientes.ingreso ? "ingreso" : "publicador";
 }
 
 /** Se llama una vez, antes de pintar. Si falla, queda la configuración local. */

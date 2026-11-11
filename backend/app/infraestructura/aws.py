@@ -20,6 +20,12 @@ def cliente_s3(region: str):
     )
 
 
+def cliente_cognito(region: str):
+    """Las llamadas admin al user pool: los grupos de una cuenta al elegir su tipo. Pocas y cortas."""
+    return boto3.client("cognito-idp", region_name=region,
+                        config=BotoConfig(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}))
+
+
 def cliente_sqs(region: str, espera_s: int = 0):
     """`espera_s`: el long polling más largo que se va a pedir; el timeout de lectura lo supera."""
     return boto3.client("sqs", region_name=region,

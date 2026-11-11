@@ -7,24 +7,29 @@ son lo que reciben los routers. Los tests reemplazan estas funciones con
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import Depends, Request
 
+from ..aplicacion.casos_uso.consultas import ConsultarConsulta, CrearConsulta
+from ..aplicacion.casos_uso.cuenta import ConsultarTipoCuenta, ElegirTipoCuenta
 from ..aplicacion.casos_uso.estudios import CrearEstudio
 from ..aplicacion.casos_uso.inferencias import ConsultarTrabajo, EncolarInferencia
 from ..aplicacion.casos_uso.modelos import (
     ConsultarModelo, ListarModelos, ListarModelosDisponibles, PrepararSubidaModelo, PublicarModelo,
 )
-from ..aplicacion.puertos import VerificadorTokens
+from ..aplicacion.puertos import DirectorioCuentas, VerificadorTokens
 from ..config import Settings
 from ..dominio.errores import NoAutenticado
 from ..dominio.usuario import Usuario
-from ..infraestructura.aws import cliente_s3, cliente_sqs
+from ..infraestructura.aws import cliente_cognito, cliente_s3, cliente_sqs
+from ..infraestructura.cognito.directorio import DirectorioCognito
 from ..infraestructura.cognito.verificador import VerificadorCognito
 from ..infraestructura.postgres.conexion import crear_pool
 from ..infraestructura.postgres.repositorios import (
-    RepositorioEstudiosPostgres, RepositorioModelosPostgres, RepositorioTrabajosPostgres,
+    RepositorioConsultasPostgres, RepositorioCuentasPostgres, RepositorioEstudiosPostgres,
+    RepositorioModelosPostgres, RepositorioTrabajosPostgres,
 )
 from ..infraestructura.reloj import RelojSistema
 from ..infraestructura.s3.almacen_estudios import AlmacenEstudiosS3
@@ -43,6 +48,10 @@ class Contenedor:
     crear_estudio: CrearEstudio
     encolar_inferencia: EncolarInferencia
     consultar_trabajo: ConsultarTrabajo
+    crear_consulta: CrearConsulta
+    consultar_consulta: ConsultarConsulta
+    elegir_tipo_cuenta: ElegirTipoCuenta
+    consultar_tipo_cuenta: ConsultarTipoCuenta
     pool: object
     verificador: VerificadorTokens | None      # None = sin Cognito: todos anónimos
 
@@ -63,15 +72,18 @@ def armar(settings: Settings) -> Contenedor:
     modelos = RepositorioModelosPostgres(pool)
     estudios = RepositorioEstudiosPostgres(pool)
     trabajos = RepositorioTrabajosPostgres(pool)
+    consultas = RepositorioConsultasPostgres(pool)
     almacen = AlmacenEstudiosS3(s3, settings.bucket_estudios, settings.s3_url_publica)
     catalogo = CatalogoModelosS3(s3, settings.bucket_modelos, settings.prefijo_modelos, settings.s3_url_publica)
     inferencias = ColaSqs(sqs, settings.cola_inferencias_url)
     evaluaciones = ColaSqs(sqs, settings.cola_evaluaciones_url)
 
-    verificador = None
+    verificador: VerificadorTokens | None = None
+    directorio: DirectorioCuentas | None = None    # sin Cognito nadie elige tipo: el anónimo ya puede todo
     if settings.cognito_user_pool_id:
         verificador = VerificadorCognito(settings.aws_region, settings.cognito_user_pool_id,
                                          settings.clientes_cognito)
+        directorio = DirectorioCognito(cliente_cognito(settings.aws_region), settings.cognito_user_pool_id)
 
     return Contenedor(
         settings=settings,
@@ -84,6 +96,11 @@ def armar(settings: Settings) -> Contenedor:
         encolar_inferencia=EncolarInferencia(estudios, modelos, trabajos, almacen, reloj, inferencias,
                                              settings.bucket_modelos, settings.bucket_estudios),
         consultar_trabajo=ConsultarTrabajo(trabajos),
+        crear_consulta=CrearConsulta(estudios, modelos, consultas, almacen, reloj, inferencias,
+                                     settings.bucket_modelos, settings.bucket_estudios),
+        consultar_consulta=ConsultarConsulta(consultas, modelos),
+        elegir_tipo_cuenta=ElegirTipoCuenta(RepositorioCuentasPostgres(pool), directorio, reloj),
+        consultar_tipo_cuenta=ConsultarTipoCuenta(directorio),
         pool=pool,
         verificador=verificador,
     )
@@ -127,6 +144,22 @@ def dep_consultar_trabajo(request: Request) -> ConsultarTrabajo:
     return contenedor(request).consultar_trabajo
 
 
+def dep_crear_consulta(request: Request) -> CrearConsulta:
+    return contenedor(request).crear_consulta
+
+
+def dep_consultar_consulta(request: Request) -> ConsultarConsulta:
+    return contenedor(request).consultar_consulta
+
+
+def dep_elegir_tipo_cuenta(request: Request) -> ElegirTipoCuenta:
+    return contenedor(request).elegir_tipo_cuenta
+
+
+def dep_consultar_tipo_cuenta(request: Request) -> ConsultarTipoCuenta:
+    return contenedor(request).consultar_tipo_cuenta
+
+
 def dep_verificador(request: Request) -> VerificadorTokens | None:
     return contenedor(request).verificador
 
@@ -139,3 +172,12 @@ def usuario_actual(request: Request, verificador: VerificadorTokens | None = Dep
     if tipo.lower() != "bearer" or not token.strip():
         raise NoAutenticado("falta el token: ingresá de nuevo")
     return verificador.verificar(token.strip())
+
+
+def exigir_grupos(*grupos: str) -> Callable[..., Usuario]:
+    """Para el `dependencies=` de un router: sin token, 401; sin ninguno de `grupos`, 403
+    `sin_permiso`. Sin Cognito, el anónimo trae todos los grupos y pasa (Usuario.anonimo)."""
+    def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+        usuario.exigir(grupos)
+        return usuario
+    return dependencia
