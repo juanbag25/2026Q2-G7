@@ -1,6 +1,6 @@
 # Ateneo · Arquitectura de la aplicación
 
-> Estado: borrador 4 · 2026-11-09 · Entrega 4
+> Estado: borrador 5 · 2026-11-11 · Entrega 4: con los permisos por rol, la junta y el tipo de cuenta
 > Complementa a [specs.md](specs.md) (qué hace) y a «Ateneo en AWS 2.0» (la infraestructura, en
 > [terraform/](terraform/README.md) y dibujada en [arquitectura-aws.drawio](arquitectura-aws.drawio)).
 > Este documento dice **cómo está construido el código** para que entre en esa infraestructura y
@@ -25,6 +25,8 @@ Cuatro servicios de ECS sobre Fargate, dos imágenes, y el sitio en S3.
 ```
  navegador ──HTTP──► S3 sitio (bucket web)
      │
+     ├──login (Hosted UI)──► Cognito ◄──── claves y grupos, por el NAT ───┐
+     │                                                                    │
      ├──HTTPS + token──► API Gateway ──VPC Link──► ALB interno + WAF ──► api ──► RDS
      │                                                                    │      ▲
      │  POST prefirmado                                    inferencias ◄──┤      │ escribe
@@ -41,6 +43,11 @@ Las flechas son las que permiten los grupos de seguridad (`terraform/organizatio
 el evaluador no tocan la base ni tienen credenciales**: publican en `resultados` y el procesador,
 el único escritor, lo aplica. **Nadie llama al worker ni al evaluador**: no abren puertos.
 
+**La api es la única pieza de la VPC que habla con Cognito**, y sale por el NAT de la capa de
+aplicación: baja las claves públicas del user pool para validar el token y, cuando una cuenta
+elige su tipo, lee y pone su grupo (`AdminListGroupsForUser`, `AdminAddUserToGroup`, §4.5). El
+login en sí no pasa por la VPC: el navegador va al Hosted UI y vuelve por la Lambda del callback.
+
 ## 2. Estructura del repositorio
 
 ```
@@ -55,19 +62,21 @@ TP-AWS/
 │   │   ├── reintentar_demo.py   # recuperación manual de un modelo de la demo que falló
 │   │   ├── config.py            # Settings (pydantic-settings) desde variables de entorno
 │   │   ├── dominio/             # entidades y reglas puras; sin FastAPI, sin boto3, sin SQL
-│   │   │   ├── modelo.py · estudio.py · trabajo.py · usuario.py · cuenta.py
+│   │   │   ├── modelo.py · estudio.py · trabajo.py
+│   │   │   ├── consulta.py · consenso.py   # la junta y su consenso, una función pura (§4.6)
+│   │   │   ├── usuario.py · cuenta.py      # grupos, PUBLICAN / CONSULTAN, autoría y el tipo de cuenta (§4.5)
 │   │   │   ├── contrato.py      # validación de modelo.json (misma que ateneo_ml, ver §7)
-│   │   │   └── errores.py       # NoEncontrado, Conflicto, EntradaInvalida, NoAutenticado, ServicioNoDisponible
+│   │   │   └── errores.py       # NoEncontrado, Conflicto, EntradaInvalida, NoAutenticado, SinPermiso, ServicioNoDisponible
 │   │   ├── aplicacion/          # casos de uso; dependen solo de puertos
-│   │   │   ├── puertos.py       # Protocols: repositorios, almacenes, colas, registro de resultados
-│   │   │   └── casos_uso/ modelos.py · estudios.py · inferencias.py · resultados.py · cuenta.py
+│   │   │   ├── puertos.py       # Protocols: repositorios, almacenes, colas, directorio de cuentas, registro de resultados
+│   │   │   └── casos_uso/ modelos.py · estudios.py · inferencias.py · consultas.py · cuenta.py · resultados.py
 │   │   ├── infraestructura/     # adaptadores; uno por tecnología
 │   │   │   ├── postgres/        # pool psycopg 3 · repositorios con SQL explícito · migraciones
 │   │   │   ├── s3/              # almacén de estudios (prefirmado) · catálogo de modelos en S3
 │   │   │   ├── sqs/             # ColaSqs: enviar, recibir, borrar
-│   │   │   ├── cognito/         # verificador de access tokens (JWKS del user pool) · directorio de grupos
+│   │   │   ├── cognito/         # verificador de access tokens (JWKS del user pool) · directorio de grupos (boto3)
 │   │   │   └── aws.py           # los clientes de boto3
-│   │   └── api/                 # FastAPI: routers, esquemas pydantic, dependencias (DI), errores, sitio
+│   │   └── api/                 # FastAPI: routers por recurso (rutas/), esquemas pydantic, dependencias (DI), errores, sitio
 │   ├── tests/
 │   └── requirements.txt
 ├── ateneo_ml/                   # compartido worker + evaluador · SOLO numpy, pillow, onnxruntime
@@ -78,13 +87,15 @@ TP-AWS/
 │   ├── main.py · config.py · aplicacion.py · puertos.py · consumidor.py
 │   └── infraestructura/ conjunto_s3.py · modelo_s3.py · colas_sqs.py
 ├── frontend/                    # React + Vite + TypeScript
-├── migraciones/ 001_inicial.sql · 002_procesador.sql · 003_demo.sql
+├── migraciones/                 # 001_inicial · 002_procesador · 003_demo · 004_consultas (la junta)
+│                                # 005_autoria (creado_por, publicado_por) · 006_tipo_de_cuenta (tabla cuenta)
 ├── models/                      # catalogo.json y conjuntos.json: los cinco modelos y los dos conjuntos de la demo
+├── tests/                       # worker, evaluador, ateneo_ml, herramientas de la demo, Lambdas del login, Postgres real
 ├── tools/                       # demo_assets · esperar_modelo · descargar_modelo · verificar_modelo
 │                                # preparar_conjunto · subir_conjunto · empaquetar_codigo
 ├── docker/                      # Dockerfile.backend · Dockerfile.ml · Dockerfile.tests · elasticmq.conf
 ├── docker-compose.yml           # la misma topología en local: Postgres, MinIO, ElasticMQ y los cuatro servicios
-└── terraform/                   # organization/ (toda la infraestructura) y modules/cola: terraform apply levanta todo
+└── terraform/                   # organization/ (toda la infraestructura; lambda/ con las dos del login) y modules/cola
 ```
 
 **Por qué `ateneo_ml` es un paquete aparte, y worker y evaluador comparten imagen.** La accuracy
@@ -197,15 +208,27 @@ class AplicarResultado:                                                     # en
     def ejecutar(self, cuerpo: dict) -> bool: ...                           # MensajeInvalido si no se entiende
 
 class CrearConsulta:                                                        # la junta (§4.6)
-    def ejecutar(self, estudio_id, modelo_ids) -> InformeConsulta:
+    def ejecutar(self, usuario, estudio_id, modelo_ids) -> InformeConsulta:
+        estudio = estudio_subido(..., usuario, estudio_id)                  # ajeno → 404, antes de armar nada
         consulta = Consulta.junta(estudio, modelos, ahora)                  # 2 a 5, evaluados, mismo tipo
-        self.consultas.guardar(consulta, consulta.trabajos_para(...))       # una transacción
+        trabajos = consulta.trabajos_para(..., creado_por=usuario.sub)
+        self.consultas.guardar(consulta, trabajos)                          # una transacción
         for trabajo, modelo in ...:
             mandar_a_la_cola(self.cola, trabajo, modelo, ...)               # lo mismo que EncolarInferencia
 
 class ConsultarConsulta:
-    def ejecutar(self, id) -> InformeConsulta:
+    def ejecutar(self, usuario, id) -> InformeConsulta:
+        if not any(usuario.es_suyo(t.creado_por) for t in trabajos): raise NoEncontrado(...)  # ajena → 404
         return consulta.informe(trabajos, modelos)                          # estado y consenso, al leer
+
+class ElegirTipoCuenta:                                                     # POST /api/cuenta/tipo (§4.5)
+    def ejecutar(self, usuario, tipo) -> TipoElegido:
+        grupo = grupo_del_tipo(tipo)                                        # institucion | publicador; otro → 422
+        actuales = self.directorio.grupos_de(usuario.username)              # los de Cognito, no los del token
+        if actuales: ...                                                    # el mismo: nada que hacer; otro → 409
+        guardado = self.cuentas.fijar_tipo(usuario.sub, tipo, ahora)        # insert … on conflict do nothing
+        self.directorio.agregar_a_grupo(usuario.username, GRUPO_POR_TIPO[guardado])
+        if guardado != tipo: raise Conflicto(...)                           # ganó el otro pedido → 409
 ```
 
 Cada decisión de negocio vive en el dominio (`republicar`, `confirmar`, `verificar_compatible`); los
@@ -273,7 +296,7 @@ Los mensajes de `resultados`:
   | Rutas | Grupos (`PUBLICAN` / `CONSULTAN`) |
   |---|---|
   | `/api/modelos/*` | `publicador`, `admin_plataforma` |
-  | `/api/estudios`, `/api/inferencias`, `/api/trabajos/{id}` | `medico`, `admin_institucion`, `admin_plataforma` |
+  | `/api/estudios`, `/api/inferencias`, `/api/trabajos/{id}`, `/api/consultas` (la junta) | `medico`, `admin_institucion`, `admin_plataforma` |
   | `/api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
   | `/api/publico/*`, `/api/health` | sin token |
 
@@ -283,9 +306,11 @@ Los mensajes de `resultados`:
   Cognito (migración 005). `CrearEstudio`, `EncolarInferencia` y `PublicarModelo` reciben el
   `Usuario`. Encolar sobre un estudio ajeno o consultar un trabajo ajeno da el mismo `404` que un id
   que no existe (tener el UUID no alcanza, y la respuesta no confirma que esté); el admin de
-  plataforma ve todo. Cambiarle el contrato a un modelo publicado solo lo puede quien lo publicó
-  (`403`); volver a evaluarlo sin contrato, cualquiera que publica. Los modelos de la demo los
-  publica `Usuario.plataforma()`. El `sub` no sale en ninguna respuesta.
+  plataforma ve todo. Una junta no guarda autor propio: es de quien creó sus trabajos, se arma solo
+  sobre un estudio propio y leer una ajena da el mismo `404`. Cambiarle el contrato a un modelo
+  publicado solo lo puede quien lo publicó (`403`); volver a evaluarlo sin contrato, cualquiera que
+  publica. Los modelos de la demo los publica `Usuario.plataforma()`. El `sub` no sale en ninguna
+  respuesta.
 - **El tipo de cuenta** (`POST /api/cuenta/tipo`, `aplicacion/casos_uso/cuenta.py`). Quien se
   registra desde «Ingresar» queda sin grupo (su cliente de Cognito no da ninguno; ver
   `terraform/README.md`) y elige una vez entre `institucion` → `admin_institucion` y
@@ -331,6 +356,8 @@ clasificación). Entra sin tocar worker, evaluador, colas ni Terraform:
 - **Estado de la consulta**, derivado de sus trabajos: `en_cola` → `procesando` → `completa`
   (todos ok), `parcial` (alguno falló y alguno anduvo) o `error` (fallaron todos). El consenso sale
   cuando terminaron todos y al menos dos votan; con uno solo, ese resultado sin consenso.
+- **Los mismos permisos que una consulta individual**: el router pide `CONSULTAN` y la junta se
+  arma sobre un estudio propio; sus trabajos guardan quién la pidió (§4.5).
 
 ## 5. Worker
 
@@ -401,39 +428,48 @@ fijos, más un test contra `modelo.onnx` real marcado `@slow` que solo corre si 
 
 React + Vite + TypeScript, CSS propio, sin librerías.
 
-Cuatro vistas. La **portada** cuenta qué es Ateneo y muestra los modelos incluidos; el
+Cinco vistas. La **portada** cuenta qué es Ateneo y muestra los modelos incluidos; el
 **catálogo** lista los publicados con sus métricas; la **ficha** de cada modelo muestra cómo rindió
 contra el conjunto reservado y, al lado, deja analizar un estudio con él (lo que antes era la vista
-de consulta); **publicar** es la vista de quien sube modelos. Portada, catálogo y fichas son
-públicos; publicar y analizar piden sesión. El único estado que comparten es el que ya vive en la API.
+de consulta); la **junta** le pasa la misma imagen a varios modelos y arma el consenso (§8.1);
+**publicar** es la vista de quien sube modelos. Portada, catálogo y fichas son públicos; analizar,
+la junta y publicar piden sesión y la cuenta que corresponde: a otra, `components/AvisoCuenta.tsx`
+le explica por qué no. El único estado que comparten es el que ya vive en la API.
 
 ```
 src/
 ├── api/ cliente.ts · tipos.ts · modelos.ts · estudios.ts · inferencias.ts · trabajos.ts · salud.ts
+│   ├── consultas.ts            # la junta: POST /consultas y GET /consultas/{id}
+│   ├── cuenta.ts               # el tipo de cuenta: GET y POST /cuenta/tipo
 │   ├── s3.ts                   # subir un archivo con un presigned POST, con progreso (XHR)
-│   ├── configuracion.ts        # /config.json: dónde está la API y los clientes de Cognito
+│   ├── configuracion.ts        # /config.json: dónde está la API y los tres clientes de Cognito
 │   └── sesion.ts               # login con Cognito: ingresar, crear cuenta, recibir los tokens, salir
 ├── hooks/
 │   ├── useModelos.ts           # catálogo público + lo del bucket si hay sesión + estado de la demo
 │   ├── useModelo.ts            # la ficha de un modelo; la vuelve a pedir cada 4 s mientras se evalúa
 │   ├── usePublicacion.ts       # subir el ONNX → publicar + polling del modelo cada 3 s
 │   ├── useInferencia.ts        # crear estudio → POST a S3 → encolar → polling del trabajo cada 1,5 s
+│   ├── useJunta.ts             # crear estudio → POST a S3 → POST /consultas → polling cada 1,5 s
 │   ├── useSalud.ts             # GET /api/health cada 10 s, para la barra y el pie
-│   ├── useSesion.ts            # la sesión de Cognito; re-renderiza al ingresar o salir
+│   ├── useSesion.ts            # la sesión de Cognito y lo que puede la cuenta; re-renderiza al ingresar o salir
 │   └── useTema.ts              # claro/oscuro; sin elección manda prefers-color-scheme
-├── enrutador.tsx               # useRuta() + <Enlace>: History API, cuatro rutas, ~90 líneas
+├── enrutador.tsx               # useRuta() + <Enlace>: History API, cinco rutas, ~100 líneas
 ├── components/
-│   ├── Marca · Navegacion · PieSitio · EstadoApi · PideIngreso                  # identidad, marco y login
+│   ├── Marca · Navegacion · PieSitio · EstadoApi                                # identidad y marco
+│   ├── PideIngreso · AvisoCuenta · ElegirTipoCuenta                             # login, cuenta equivocada, tipo de cuenta
 │   ├── TarjetaModelo · Paginacion · EstadoModelo · RendimientoModelo            # catálogo y ficha
 │   ├── SubirModelo · ListaDisponibles                                           # publicación
-│   └── AnalizarEstudio · CargadorImagen · EstadoTrabajo · ResultadoInferencia   # analizar un estudio
+│   ├── AnalizarEstudio · CargadorImagen · EstadoTrabajo · ResultadoInferencia   # analizar un estudio
+│   └── SelectorJunta · ResultadoJunta                                           # la junta
 ├── pages/
 │   ├── Inicio.tsx              # "/"              portada: qué es, los modelos incluidos, cómo funciona
 │   ├── Modelos.tsx             # "/modelos"       el catálogo: tarjetas filtrables por tipo de estudio
 │   ├── FichaModelo.tsx         # "/modelos/<id>"  cómo rindió en la evaluación y, al lado, analizar un estudio
+│   ├── Junta.tsx               # "/junta"         de 2 a 5 modelos sobre la misma imagen, con el consenso arriba
 │   └── Publicar.tsx            # "/publicar"      subir un modelo, seguir su evaluación, lo que hay en el bucket
 ├── utilidades/ formato.ts · contrato.ts · metricas.ts · modelos.ts   # presentación, modelo.json, métricas
-└── estilos/ base.css · sitio.css · paneles.css                       # tokens, sitio, paneles
+│   └── roles.ts                # espejo de PUBLICAN / CONSULTAN y cuándo preguntar el tipo de cuenta
+└── estilos/ base.css · sitio.css · paneles.css · junta.css           # tokens, sitio, paneles, junta
 ```
 
 - Componentes sin `fetch`: reciben datos y callbacks. Los hooks usan `api/`. Cambiar la API es
@@ -463,9 +499,9 @@ src/
   `utilidades/roles.ts`). Además, `sesion.ts` toma la sesión que guarda otra pestaña (evento
   `storage`) y relee la guardada cuando «atrás» devuelve la página desde memoria (`pageshow`).
 - **Ruteo propio, no react-router.** `enrutador.tsx` es `useSyncExternalStore` sobre
-  `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son cuatro rutas
-  (`/`, `/modelos`, `/modelos/<id>`, `/publicar`; `/consulta`, de la versión anterior, cae en el
-  catálogo) y una dependencia menos. El bucket web devuelve `index.html` como documento de error (y
+  `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son cinco rutas
+  (`/`, `/modelos`, `/modelos/<id>`, `/junta`, `/publicar`; `/consulta`, de la versión anterior,
+  cae en el catálogo) y una dependencia menos. El bucket web devuelve `index.html` como documento de error (y
   `sitio.py` en local), así que recargar `/modelos/<id>` funciona.
 - **Identidad visual**: la misma de los documentos del proyecto (verde clínico `#0E6B66`, Archivo
   para títulos, Source Sans 3 para el cuerpo, IBM Plex Mono para los datos), en tokens de CSS con
@@ -489,7 +525,7 @@ src/
 
 | Servicio | Variable | Uso |
 |----------|----------|-----|
-| api | `DATABASE_URL` (secreto) · `BUCKET_MODELOS` · `BUCKET_ESTUDIOS` · `COLA_INFERENCIAS_URL` · `COLA_EVALUACIONES_URL` · `COGNITO_USER_POOL_ID` · `COGNITO_CLIENT_IDS` · `ORIGEN_WEB` · `WEB_DIR` · `DATOS_DEMO` | encolar, validar tokens y servir el catálogo |
+| api | `DATABASE_URL` (secreto) · `BUCKET_MODELOS` · `BUCKET_ESTUDIOS` · `COLA_INFERENCIAS_URL` · `COLA_EVALUACIONES_URL` · `COGNITO_USER_POOL_ID` · `COGNITO_CLIENT_IDS` (los tres clientes) · `ORIGEN_WEB` · `WEB_DIR` · `DATOS_DEMO` | encolar, servir el catálogo, validar tokens, autorizar por grupo y poner el grupo del tipo de cuenta |
 | procesador | `DATABASE_URL` (secreto) · `COLA_RESULTADOS_URL` · `COLA_INFERENCIAS_URL` · buckets · `DATOS_DEMO` (con la demo, también `COLA_EVALUACIONES_URL`) | aplicar resultados, reenviar y sembrar la demo |
 | worker | `COLA_INFERENCIAS_URL` · `COLA_RESULTADOS_URL` · `MODELOS_DIR=/mnt/modelos` · `CACHE_SESIONES` (4 por defecto) | caché EFS · LRU |
 | evaluador | `COLA_EVALUACIONES_URL` · `COLA_RESULTADOS_URL` · `BUCKET_EVALUACION` · `BUCKET_MODELOS` | evaluar y publicar |
@@ -522,6 +558,7 @@ tres colas y sus colas de fallidos (`docker/elasticmq.conf`). El sitio lo sirve 
 | Adaptadores | SQS y el directorio de Cognito con el `Stubber` de botocore; tokens con una clave RSA propia; la elección del tipo contra Postgres, con pedidos a la vez (optativo, `TEST_DEMO_DATABASE_URL`) | pytest |
 | Lambdas del login | qué grupo da cada cliente al registrarse (ninguno el de «Ingresar», ninguno por defecto) y con qué cliente se canjea el código (`tests/test_lambdas_login.py`) | pytest, Cognito falso |
 | API | routers con casos de uso falsos (`dependency_overrides`); 401 sin token y 403 con el rol equivocado, ruta por ruta; `/api/cuenta/tipo` con token y sin rol | `TestClient` |
+| Frontend | el catálogo de la portada, con qué cliente entra «Ingresar» y cuándo preguntar el tipo de cuenta (`frontend/tests/*.cjs`) | `node --test`, más `tsc` |
 | Infraestructura | la arquitectura de «Ateneo en AWS 2.0» contra un AWS simulado | `terraform test` |
 
 ## 12. Despliegue
@@ -530,6 +567,11 @@ tres colas y sus colas de fallidos (`docker/elasticmq.conf`). El sitio lo sirve 
 una instancia construye las dos imágenes, las sube a ECR con ese hash como etiqueta y sube el sitio
 al bucket web. ECS reemplaza las tareas de a poco. Un cambio de código produce otro hash; sin
 cambios, el plan sale vacío.
+
+Desde GitHub lo corre el workflow «Aplicar», con cada push a `main` o a mano, y solo con
+las credenciales de la sesión del Learner Lab cargadas a mano en los secrets: sin ellas falla y no
+despliega, y no hay forma de evitarlo porque el lab no deja crear roles (tampoco OIDC). Las
+migraciones nuevas (004 a 006) las aplica el procesador al arrancar la tarea con la imagen nueva.
 
 ## 13. Decisiones que este diseño deja abiertas a propósito
 

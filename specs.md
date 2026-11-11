@@ -86,18 +86,26 @@ las que cambiaron con la Entrega 3.
 | D5 | Un despachador dentro del backend llama al worker por el ALB interno | La api encola en `inferencias` y el worker la lee: no hay ALB hacia los workers ni puertos de entrada |
 | D6 | El despachador escribe el resultado | El procesador es el único que escribe resultados: lee la cola `resultados` |
 | D7 | El backend sirve el sitio por el ALB, un solo origen | El sitio lo sirve S3 (corrección de la E2); la API está detrás de API Gateway, por HTTPS, con CORS hacia el sitio |
-| D10 | Sin autenticación | Cognito: Hosted UI, un cliente por tipo de cuenta y cuatro grupos; API Gateway y el backend validan el access token |
+| D10 | Sin autenticación | Cognito: Hosted UI, tres clientes (crear cuenta de institución, de publicador, e «Ingresar», que no da grupo) y cuatro grupos; API Gateway y el backend validan el access token, y cada router pide sus grupos |
 
 ## 3. Actores
 
 - **Operador** (nosotros): despliega con Terraform. Con `datos_demo` (el valor por defecto) el
   despliegue prepara solo los cinco modelos y los conjuntos reservados, y el procesador los
   publica; a mano queda el camino para sembrar el bucket sin navegador (§5.1).
-- **Publicador**: con su cuenta de Cognito, sube un modelo con su contrato en `/publicar` y mira
-  su evaluación.
-- **Usuario clínico**: con su cuenta de Cognito, elige un modelo en el catálogo (`/modelos`) y
-  consulta un estudio desde la ficha del modelo (`/modelos/<id>`).
+- **Publicador** (grupo `publicador`): sube un modelo con su contrato en `/publicar` y mira su
+  evaluación.
+- **Usuario clínico** (grupos `medico` y `admin_institucion`): elige un modelo en el catálogo
+  (`/modelos`) y consulta un estudio desde la ficha del modelo (`/modelos/<id>`), o se lo pasa a
+  una junta de 2 a 5 modelos en `/junta`.
+- **Admin de plataforma** (grupo `admin_plataforma`): lo crea Terraform; puede todo lo anterior y
+  ve lo de todas las cuentas.
 - **Visitante**: sin cuenta, ve la portada, el catálogo y las fichas.
+
+Instituciones y publicadores se registran solos; quien se registra desde «Ingresar» elige el tipo
+una sola vez dentro de la app (§6, «Quién puede llamar a cada ruta»). Una cuenta de médico la
+crea un admin desde la consola de Cognito, con contraseña temporal: la app todavía no tiene la
+invitación de la spec.
 - **Sistemas**: cuatro servicios de ECS —api y procesador (capa de aplicación), worker (capa de
   inferencia) y evaluador (capa de evaluación, aislada)— y tres colas de SQS.
 
@@ -107,7 +115,9 @@ las que cambiaron con la Entrega 3.
 |----------|--------|------------|
 | **Modelo** | Un artefacto ONNX versionado con su contrato (`modelo.json`) y, una vez evaluado, sus métricas. Una fila por versión. | `s3://ateneo-modelos-<sufijo>/modelos/<nombre>/<version>/` + tabla `modelo` |
 | **Estudio** | Una imagen subida por un usuario, de un tipo de estudio (`torax-rx`, `cerebro-rm`). Expira a los 7 días. | `s3://ateneo-estudios-<sufijo>/estudios/<uuid>.<ext>` + tabla `estudio` |
-| **Trabajo** | Una inferencia de un modelo sobre un estudio, con estado, intentos y resultado. La cola es SQS; la tabla guarda el estado. | tabla `trabajo` + un mensaje en `inferencias` |
+| **Trabajo** | Una inferencia de un modelo sobre un estudio, con estado, intentos y resultado. La cola es SQS; la tabla guarda el estado. Es de quien lo creó (`creado_por`). | tabla `trabajo` + un mensaje en `inferencias` |
+| **Consulta (junta)** | De 2 a 5 trabajos sobre el mismo estudio, uno por modelo. Su estado y el consenso se calculan al leer (§5.4). | tabla `consulta` + `trabajo.consulta_id` |
+| **Cuenta** | El tipo que eligió, una sola vez, quien se registró desde «Ingresar»: institución o publicador. Los permisos salen de los grupos de Cognito. | Cognito + tabla `cuenta` |
 | **Conjunto de evaluación** | Casos reservados de un tipo de estudio, congelados en una versión, con manifiesto y verdad. | `s3://ateneo-evaluacion-<sufijo>/<tipo>/<version>/` |
 
 Reglas:
@@ -351,7 +361,7 @@ Con Cognito, cada ruta de `/api` salvo `/api/publico/*` y `/api/health` pide el 
 | Rutas | Cuentas |
 |-------|---------|
 | `/api/modelos/disponibles` · `/api/modelos/subidas` · `/api/modelos/publicar` | publicador · admin de plataforma |
-| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` | médico · admin de institución · admin de plataforma |
+| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` · `POST /api/consultas` · `GET /api/consultas/{id}` | médico · admin de institución · admin de plataforma |
 | `GET` y `POST /api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
 | `/api/publico/*` · `/api/health` | cualquiera, sin token |
 
@@ -580,10 +590,12 @@ de los casos falla, la evaluación termina en `error`.
 
 ## 12. Pantallas
 
-Cuatro vistas con ruteo del lado del cliente: `/`, `/modelos`, `/modelos/<id>` y `/publicar`
-(`/consulta`, de la versión anterior, cae en el catálogo). En AWS el sitio lo sirve S3 por HTTP y
-los datos van a API Gateway por HTTPS. Portada, catálogo y fichas son públicos; publicar y analizar
-un estudio piden sesión.
+Cinco vistas con ruteo del lado del cliente: `/`, `/modelos`, `/modelos/<id>`, `/junta` y
+`/publicar` (`/consulta`, de la versión anterior, cae en el catálogo), más la pantalla del tipo de
+cuenta, que no tiene ruta propia. En AWS el sitio lo sirve S3 por HTTP y los datos van a API
+Gateway por HTTPS. Portada, catálogo y fichas son públicos; analizar un estudio, la junta y
+publicar piden sesión y la cuenta que corresponde: con otra, la vista dice por qué no y qué puede
+hacer esa cuenta.
 
 **Portada (`/`)** — qué es Ateneo, los modelos incluidos (los cinco de la demo, con el mejor de
 cada tipo marcado), cómo funciona en tres pasos y la invitación a publicar uno propio. Muestra en
@@ -643,8 +655,9 @@ especificidad 0,99, AUC 0,995, 0 casos ilegibles), inferencias de 59 a 292 ms, y
 apagado el trabajo hacía 3 intentos y terminaba en `error` sin colgar nada.
 
 Con la arquitectura de la Entrega 3 quedan así. El despliegue del 25/10 creó toda la
-infraestructura sin errores, pero **estos pasos todavía no se recorrieron en AWS**: son el guion
-del ensayo de la Entrega 4.
+infraestructura sin errores, y en noviembre se probó a mano la integración desplegada de permisos
+y junta; aun así, **estos pasos no se recorrieron uno por uno en AWS**: son el guion del ensayo de
+la Entrega 4.
 
 1. **Subir y publicar** con el `.onnx` y su contrato deja los dos archivos en
    `modelos/<nombre>/<version>/` y la fila en `pendiente`; el evaluador arranca solo (de 0 a 1
