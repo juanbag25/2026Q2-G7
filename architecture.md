@@ -132,6 +132,7 @@ Reglas adicionales:
 class RepositorioModelos(Protocol): ...          # guardar · obtener · buscar · listar
 class RepositorioEstudios(Protocol): ...         # guardar · obtener
 class RepositorioTrabajos(Protocol): ...         # guardar · obtener
+class RepositorioConsultas(Protocol): ...        # la junta: guardar(consulta, trabajos) en una transacción · obtener · trabajos_de
 
 class ColaInferencias(Protocol):
     def enviar(self, p: PeticionInferencia) -> None: ...        # ServicioNoDisponible
@@ -186,6 +187,17 @@ class EncolarInferencia:
 
 class AplicarResultado:                                                     # en el procesador
     def ejecutar(self, cuerpo: dict) -> bool: ...                           # MensajeInvalido si no se entiende
+
+class CrearConsulta:                                                        # la junta (§4.6)
+    def ejecutar(self, estudio_id, modelo_ids) -> InformeConsulta:
+        consulta = Consulta.junta(estudio, modelos, ahora)                  # 2 a 5, evaluados, mismo tipo
+        self.consultas.guardar(consulta, consulta.trabajos_para(...))       # una transacción
+        for trabajo, modelo in ...:
+            mandar_a_la_cola(self.cola, trabajo, modelo, ...)               # lo mismo que EncolarInferencia
+
+class ConsultarConsulta:
+    def ejecutar(self, id) -> InformeConsulta:
+        return consulta.informe(trabajos, modelos)                          # estado y consenso, al leer
 ```
 
 Cada decisión de negocio vive en el dominio (`republicar`, `confirmar`, `verificar_compatible`); los
@@ -266,6 +278,33 @@ Los mensajes de `resultados`:
   publica `Usuario.plataforma()`. El `sub` no sale en ninguna respuesta.
 - La interfaz solo esconde lo que la cuenta no puede hacer (`frontend/src/utilidades/roles.ts`,
   espejo de las dos reglas); decide el backend.
+
+### 4.6 La junta de modelos
+
+Varios modelos sobre el mismo estudio y un informe de consenso (spec funcional F8 y §6.5, solo
+clasificación). Entra sin tocar worker, evaluador, colas ni Terraform:
+
+- **Una consulta agrupa N trabajos** (`migraciones/004_consultas.sql`: tabla `consulta` y
+  `trabajo.consulta_id`, nulo en las consultas individuales). `POST /api/consultas` valida la
+  junta entera en el dominio (`Consulta.junta`: de 2 a 5 modelos distintos, del tipo del estudio,
+  con las mismas etiquetas y con evaluación `ok`), guarda la consulta y sus trabajos en una sola
+  transacción y deja **un mensaje por trabajo** en `inferencias`, el mismo que manda
+  `EncolarInferencia`. Los modelos corren en paralelo en los workers que haya, y la cola cuenta
+  N mensajes para el escalado. Si la cola no contesta, el reenviador los manda como a cualquier
+  trabajo pendiente.
+- **Nada de la junta se guarda: se calcula al leer.** `GET /api/consultas/{id}` arma el informe
+  con los trabajos y las métricas vigentes de cada modelo (`Consulta.informe`). El procesador
+  sigue aplicando resultados de a uno, sin saber de juntas, y no hay un consenso guardado que se
+  pueda desincronizar.
+- **El consenso es una función pura** (`dominio/consenso.py`). Peso de cada modelo = su métrica
+  verificada (`metricas["auc"]` si el evaluador la midió, si no `accuracy`). Consenso = promedio
+  de las probabilidades ponderado por esos pesos, etiqueta por argmax. Acuerdo = parte del peso
+  total de los modelos cuya predicción coincide con el consenso; **revisión prioritaria** si es
+  menor a 0,70. Un modelo que perdió su métrica (lo volvieron a publicar) muestra su resultado
+  pero no vota.
+- **Estado de la consulta**, derivado de sus trabajos: `en_cola` → `procesando` → `completa`
+  (todos ok), `parcial` (alguno falló y alguno anduvo) o `error` (fallaron todos). El consenso sale
+  cuando terminaron todos y al menos dos votan; con uno solo, ese resultado sin consenso.
 
 ## 5. Worker
 
@@ -389,6 +428,19 @@ src/
   tema claro y oscuro. Las fuentes vienen de Google Fonts con `display=swap` y una pila del sistema
   detrás: si el navegador no las alcanza, el sitio sigue legible.
 
+### 8.1 La junta en la interfaz
+
+- `pages/Junta.tsx` (`/junta`): tipo de estudio → de 2 a 5 modelos evaluados → la imagen, una
+  sola vez → el informe. Se llega desde la barra, desde el catálogo («Consultar en junta», con el
+  tipo filtrado) y desde la ficha de un modelo evaluado (`/junta?con=<id>`, con ese modelo elegido).
+- `hooks/useJunta.ts`: crear el estudio → POST a S3 → `POST /consultas` → polling de
+  `GET /consultas/{id}` cada 1,5 s hasta `completa`, `parcial` o `error`. `api/consultas.ts` es su
+  cliente.
+- `components/SelectorJunta.tsx` (los modelos, con la métrica con que pesa cada uno) y
+  `components/ResultadoJunta.tsx`: arriba el informe de consenso —la predicción, el acuerdo contra
+  la marca del 70 % y la revisión prioritaria destacada—, debajo cada modelo con «coincide» o
+  «discrepa» (reusa `ResultadoInferencia`) y al final la leyenda de soporte a la decisión clínica.
+
 ## 9. Configuración por servicio
 
 | Servicio | Variable | Uso |
@@ -417,6 +469,7 @@ tres colas y sus colas de fallidos (`docker/elasticmq.conf`). El sitio lo sirve 
 |-------|-----|---------|
 | Dominio | `republicar` (409), `verificar_compatible`, validación de contrato | pytest, sin IO |
 | Casos de uso | orquestación con fakes en memoria; encolar con la cola caída; reenviar y vencer; autoría (lo ajeno da 404) | pytest |
+| Junta | consenso con números hechos a mano (`test_consenso.py`); crear y leer la junta con fakes, incluida la junta de 3 con un modelo caído y la junta ajena, que da 404 (`test_consultas.py`); rutas y roles (`test_api_consultas.py`) | pytest |
 | Procesador | aplicar cada resultado una sola vez; descartar lo ilegible; no borrar si la base falla | pytest |
 | Worker y evaluador | qué publican y cuándo borran el mensaje; el latido del evaluador | pytest, sin SQS |
 | `ateneo_ml` | preprocesamiento, posprocesamiento, métricas a mano; motor con un ONNX de una capa | pytest + onnxruntime |
@@ -435,13 +488,16 @@ cambios, el plan sale vacío.
 
 | Evolución | Qué cambia | Qué no cambia |
 |-----------|------------|---------------|
-| Matriz de permisos completa (spec E3 §2) | Hoy hay dos reglas por router (`PUBLICAN`, `CONSULTAN`) y autoría por `sub` (§4.5). Falta: organizaciones (que el admin de institución vea lo de sus médicos, no solo lo suyo), separar lo que hace el médico de lo que hace el admin de institución, cuentas pendientes de aprobación (403 hasta que un admin las apruebe), y que el admin de plataforma vea solo metadatos y agregados, como pide la spec (hoy ve y usa todo) | `exigir_grupos`, el login, los routers |
-| Organizaciones y créditos | Tablas nuevas; `EncolarInferencia` reserva y el procesador cobra o libera | Worker, evaluador, colas |
-| Juntas de varios modelos | `EncolarInferencia` crea N trabajos; el procesador calcula el consenso al llegar el último | Worker, evaluador |
+| Matriz de permisos completa (spec E3 §2) | Hoy hay dos reglas por router (`PUBLICAN`, `CONSULTAN`; la junta va con `CONSULTAN`, como una consulta individual) y autoría por `sub` (§4.5). Falta: organizaciones (que el admin de institución vea lo de sus médicos, no solo lo suyo), separar lo que hace el médico de lo que hace el admin de institución, cuentas pendientes de aprobación (403 hasta que un admin las apruebe), y que el admin de plataforma vea solo metadatos y agregados, como pide la spec (hoy ve y usa todo) | `exigir_grupos`, el login, los routers |
+| Organizaciones y créditos | Tablas nuevas; `CrearConsulta` y `EncolarInferencia` reservan y el procesador cobra o libera | Worker, evaluador, colas |
 | Carga de conjuntos desde la app | Un mensaje `ingerir_conjunto` en `evaluaciones` | Evaluador (otro caso de uso), procesador |
 | Historial de evaluaciones | Tabla `evaluacion`; la fila del modelo apunta a la vigente | API pública, UI |
 | DICOM | Un `DecodificadorImagen` más | Preprocesamiento, motor, métricas |
 | Segmentación | Un posprocesador y un calculador de métricas por `tarea` | Motor, worker, evaluador |
+| Consenso de segmentación y detección | Una función por tarea en `dominio/consenso.py` (mapas promediados, WBF), como dice la spec §6.5 | Consulta, cola, worker, API |
+
+La junta de varios modelos estaba en esta tabla y ya no es evolución: está implementada (§4.6),
+con el consenso calculado al leer en vez de en el procesador.
 
 ## Modelos iniciales y selección en la web
 
@@ -465,7 +521,8 @@ modelos de usuarios. Las métricas de todas las tarjetas son las calculadas por 
 La selección sigue siendo catálogo → ficha `/modelos/<id>` → imagen → trabajo de inferencia.
 La ficha y el resultado identifican el modelo. Cada trabajo contiene el ID seleccionado y
 solo ejecuta ese modelo. El worker conserva su caché LRU existente de cuatro sesiones; no
-se agregan workers por modelo, GPU, inferencia en navegador ni votación entre modelos.
+se agregan workers por modelo, GPU ni inferencia en navegador. Para varios modelos sobre la
+misma imagen está la junta (§4.6): sigue siendo un trabajo por modelo.
 
 La recuperación `python -m app.reintentar_demo --nombre <nombre> --version <version>`
 limita sus cambios a una identidad. El comando `tools/esperar_modelo.py` espera todos por

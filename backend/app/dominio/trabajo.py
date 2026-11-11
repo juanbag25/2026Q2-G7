@@ -36,9 +36,11 @@ class Trabajo:
     duracion_ms: int | None = None
     error: str | None = None
     creado_por: str | None = None      # el `sub` de Cognito; None en las filas anteriores a la 005
+    consulta_id: UUID | None = None    # la junta a la que pertenece; None = consulta individual
 
     @staticmethod
-    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime, creado_por: str) -> "Trabajo":
+    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime, creado_por: str,
+              consulta_id: UUID | None = None) -> "Trabajo":
         return Trabajo(
             id=uuid4(),
             estudio_id=estudio.id,
@@ -48,4 +50,9 @@ class Trabajo:
             creado=ahora,
             actualizado=ahora,
             creado_por=creado_por,
+            consulta_id=consulta_id,
         )
+
+    @property
+    def terminado(self) -> bool:
+        return self.estado in ("ok", "error")

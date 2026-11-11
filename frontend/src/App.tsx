@@ -10,6 +10,7 @@ import { useSesion } from "./hooks/useSesion";
 import { useTema } from "./hooks/useTema";
 import FichaModelo from "./pages/FichaModelo";
 import Inicio from "./pages/Inicio";
+import Junta from "./pages/Junta";
 import Modelos from "./pages/Modelos";
 import Publicar from "./pages/Publicar";
 import { tuCuenta } from "./utilidades/roles";
@@ -24,6 +25,8 @@ function titulo(ruta: Ruta): string {
       return "Modelo · Ateneo";
     case "publicar":
       return "Publicar un modelo · Ateneo";
+    case "junta":
+      return "Junta de modelos · Ateneo";
   }
 }
 
@@ -41,7 +44,7 @@ export default function App({ errorIngreso }: Props) {
   const ruta = useRuta();
   const { salud, consultado } = useSalud();
   const { tema, alternar } = useTema();
-  const { sesion, conLogin, puedePublicar } = useSesion();
+  const { sesion, conLogin, puedePublicar, puedeConsultar } = useSesion();
   const [aviso, setAviso] = useState(errorIngreso);
   const pideIngreso = conLogin && sesion === null;
 
@@ -56,6 +59,16 @@ export default function App({ errorIngreso }: Props) {
       texto={`${tuCuenta(sesion?.grupos ?? [])} Podés elegir un modelo del catálogo y analizar tus estudios desde su ficha.`}
     />
   );
+  // /junta: sin sesión, la propia página pide ingresar; con una cuenta que no consulta, por qué no.
+  const junta =
+    pideIngreso || puedeConsultar ? (
+      <Junta />
+    ) : (
+      <AvisoCuenta
+        titulo="La junta es para cuentas de institución o de médico"
+        texto={`${tuCuenta(sesion?.grupos ?? [])} Podés ver el catálogo y cómo rindió cada modelo en su evaluación.`}
+      />
+    );
   const enPortada = ruta.vista === "inicio";
 
   useEffect(() => {
@@ -80,6 +93,7 @@ export default function App({ errorIngreso }: Props) {
         {ruta.vista === "inicio" && <Inicio />}
         {ruta.vista === "modelos" && <Modelos />}
         {ruta.vista === "modelo" && <FichaModelo key={ruta.id} id={ruta.id} />}
+        {ruta.vista === "junta" && junta}
         {ruta.vista === "publicar" && publicar}
       </main>
 

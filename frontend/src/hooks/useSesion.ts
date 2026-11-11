@@ -16,6 +16,11 @@ export interface EstadoSesion {
    * para registrarse como publicador). No para quien ingresó con otra cuenta.
    */
   ofrecerPublicar: boolean;
+  /**
+   * Los enlaces a la junta: para quien consulta y para quien todavía no ingresó (la puerta para
+   * registrarse como institución). No para quien ingresó como publicador.
+   */
+  ofrecerConsultar: boolean;
 }
 
 /**
@@ -27,11 +32,13 @@ export function useSesion(): EstadoSesion {
   const conLogin = configuracion().cognito !== null;
   const grupos = sesion?.grupos ?? [];
   const puedePublicar = !conLogin || tieneAlguno(grupos, PUBLICAN);
+  const puedeConsultar = !conLogin || tieneAlguno(grupos, CONSULTAN);
   return {
     sesion,
     conLogin,
     puedePublicar,
-    puedeConsultar: !conLogin || tieneAlguno(grupos, CONSULTAN),
+    puedeConsultar,
     ofrecerPublicar: sesion === null || puedePublicar,
+    ofrecerConsultar: sesion === null || puedeConsultar,
   };
 }

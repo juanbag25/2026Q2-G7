@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from ..dominio.consulta import Consulta
 from ..dominio.estudio import Estudio, ObjetoAlmacenado
 from ..dominio.modelo import Modelo, ResultadoEvaluacion
 from ..dominio.trabajo import ResultadoInferencia, Trabajo
@@ -95,6 +96,13 @@ class RepositorioEstudios(Protocol):
 class RepositorioTrabajos(Protocol):
     def guardar(self, t: Trabajo) -> None: ...
     def obtener(self, id: UUID) -> Trabajo: ...                     # NoEncontrado
+
+
+class RepositorioConsultas(Protocol):
+    """La junta. La consulta y sus trabajos se guardan juntos: no queda una junta a medias."""
+    def guardar(self, c: Consulta, trabajos: list[Trabajo]) -> None: ...
+    def obtener(self, id: UUID) -> Consulta: ...                    # NoEncontrado
+    def trabajos_de(self, id: UUID) -> list[Trabajo]: ...
 
 
 class TrabajosSinEnviar(Protocol):

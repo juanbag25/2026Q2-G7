@@ -208,6 +208,8 @@ Actualizar todos los consumidores juntos: frontend, comando de espera, documenta
 - Enviar el `modelo_id` de esa ficha, no el del modelo inicial fijado en una constante.
 - Mostrar el nombre del modelo también al presentar el resultado; cambiar de ficha no debe conservar un resultado atribuible al modelo anterior.
 - No agregar comparación simultánea, votación, ensemble ni selección automática por accuracy.
+  (Después llegó la junta de modelos como pantalla aparte, `/junta`; la ficha sigue corriendo un
+  solo modelo.)
 
 ### Publicación propia
 
