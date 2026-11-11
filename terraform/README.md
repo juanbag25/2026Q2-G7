@@ -271,14 +271,16 @@ Hay además 11 variables y 10 salidas en el root, y 5 bloques `validation`.
 
 ## El pipeline de GitHub Actions
 
-Cuatro workflows en `.github/workflows/`. La división es por si necesitan credenciales de AWS o
-no, porque las del Learner Lab vencen cada sesión:
+Cuatro workflows propios en `.github/workflows/`; los otros tres (`tfsec`, `terraform-docs` y
+`terraform-format`) vienen con la plantilla de la cátedra y corren solo en los PR. La división
+de los nuestros es por si necesitan credenciales de AWS o no, porque las del Learner Lab vencen
+cada sesión:
 
 | Workflow | Cuándo corre | Toca AWS | Qué hace |
 |----------|--------------|----------|----------|
 | `validar.yml` | solo, en cada push y cada PR | no | `fmt -check`, `init -backend=false`, `validate`, `test` |
 | `plan.yml` | en el PR hacia `main`, y a mano | sí | bucket del estado, `init` y `plan`; guarda el plan como artifact |
-| `aplicar.yml` | **solo a mano**, escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial |
+| `aplicar.yml` | **solo, en cada push a `main`** (al mergear), y a mano escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial. Sin credenciales en los secrets termina en verde sin desplegar; con credenciales vencidas, falla |
 | `destruir.yml` | **solo a mano**, escribiendo «destruir» | sí | `tf.sh destroy` |
 
 El ciclo `init` → `validate` → `plan` → `apply` que pide la entrega queda así: `validar.yml` hace
@@ -296,10 +298,14 @@ salteado es el artifact, y que el resumen del run traiga la salida de `terraform
 Los workflows no repiten comandos: llaman a `scripts/bootstrap-estado.sh` y `scripts/tf.sh`, los
 mismos que usa una persona en CloudShell. Así el pipeline no puede desalinearse de esta guía.
 
-Aplicar y destruir no se disparan con un push, a propósito: el lab cuesta unos USD 7 por día
-prendido y la regla de uso es destruir al terminar: prenderlo es una decisión de una persona.
-Los tres comparten `concurrency: infraestructura`, así que nunca corren dos a la vez contra la
-misma cuenta.
+**Mergear a `main` despliega.** Aplicar corre solo con cada push a `main`: lo que llega a main se
+aplica en el lab, si los secrets tienen las credenciales de la sesión. Destruir, en cambio, es
+solo a mano. El lab cuesta unos USD 7 por día prendido y la regla de uso es destruir al terminar:
+un merge a main con credenciales vigentes prende el entorno (o lo actualiza, si ya estaba), y
+después hay que correr «Destruir». Un merge que solo cambia documentación fuera de las carpetas
+del código (estos README, `architecture.md`, `specs.md`) no cambia el hash de las imágenes, así
+que el apply corre pero sale sin cambios. Plan, aplicar y destruir comparten
+`concurrency: infraestructura`, así que nunca corren dos a la vez contra la misma cuenta.
 
 ### Secrets que hay que cargar en el repositorio
 
@@ -314,7 +320,8 @@ En Settings → Secrets and variables → Actions → New repository secret:
 | `EMAIL_ALERTAS` | el mail que recibe las alarmas de operación |
 
 Las tres primeras **vencen cada sesión del lab** (unas cuatro horas): hay que volver a pegarlas
-antes de correr `plan`, `aplicar` o `destruir`.
+antes de correr `plan`, `aplicar` o `destruir`, y antes de mergear a `main` si el merge tiene
+que desplegar.
 
 ## Inicialización automática de modelos
 
