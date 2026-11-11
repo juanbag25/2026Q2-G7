@@ -413,6 +413,75 @@
   text-align: left;
 }
 
+/* --- Tipo de cuenta: lo que ve quien se registró desde «Ingresar» ---------- */
+
+/* La pregunta es larga: el h1 de las otras páginas, un poco más chico. */
+.titulo-pregunta {
+  font-size: clamp(30px, 4.4vw, 46px);
+}
+
+.tipos-cuenta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.tipo-cuenta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 22px 24px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--superficie);
+  box-shadow: var(--sombra);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.tipo-cuenta:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: var(--acento);
+  box-shadow: var(--sombra-alta);
+}
+
+.tipo-cuenta:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.tipo-cuenta.elegido {
+  opacity: 1;
+  border-color: var(--acento);
+  background: var(--acento-suave);
+}
+
+.tipo-cuenta-nombre {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.tipo-cuenta-texto {
+  font-size: 14px;
+  color: var(--texto-suave);
+}
+
+.tipo-cuenta-error {
+  margin-top: 16px;
+}
+
+.tipo-cuenta-nota {
+  margin-top: 20px;
+  font-size: 14px;
+  text-align: center;
+}
+
 .destacado {
   display: flex;
   flex-direction: column;

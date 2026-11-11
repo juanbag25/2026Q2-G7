@@ -8,6 +8,11 @@ export interface EstadoSesion {
   sesion: Sesion | null;
   /** false en local, donde no hay Cognito. */
   conLogin: boolean;
+  /**
+   * Con sesión y sin grupos: se registró desde «Ingresar» y todavía no eligió si su cuenta es de
+   * una institución o de un publicador. Hasta que elija, la app muestra solo esa pregunta.
+   */
+  pideTipo: boolean;
   /** Sin login (local) se puede todo; con login, lo dicen los grupos. Sin sesión, false. */
   puedePublicar: boolean;
   puedeConsultar: boolean;
@@ -36,6 +41,7 @@ export function useSesion(): EstadoSesion {
   return {
     sesion,
     conLogin,
+    pideTipo: conLogin && sesion !== null && grupos.length === 0,
     puedePublicar,
     puedeConsultar,
     ofrecerPublicar: sesion === null || puedePublicar,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import AvisoCuenta from "./components/AvisoCuenta";
+import ElegirTipoCuenta from "./components/ElegirTipoCuenta";
 import Navegacion from "./components/Navegacion";
 import PideIngreso from "./components/PideIngreso";
 import PieSitio from "./components/PieSitio";
@@ -31,21 +32,25 @@ function titulo(ruta: Ruta): string {
 }
 
 interface Props {
-  /** El login volvió con un error (cancelado, código vencido, state ajeno). */
-  errorIngreso: string | null;
+  /**
+   * Lo que hay que avisar al arrancar: el login volvió con un error (cancelado, código vencido,
+   * state ajeno), o la cuenta ya tenía otro tipo cuando se eligió uno (409).
+   */
+  avisoInicial: string | null;
 }
 
 /**
  * Marco del sitio: barra, la vista de la ruta actual y pie. El catálogo y las fichas
  * son públicos; publicar pide una cuenta de publicador, y analizar un estudio, dentro de la
- * ficha, una de institución o de médico.
+ * ficha, una de institución o de médico. Una cuenta recién registrada desde «Ingresar» no tiene
+ * ninguna de las dos: hasta que elija, en cualquier ruta se ve solo esa pregunta.
  */
-export default function App({ errorIngreso }: Props) {
+export default function App({ avisoInicial }: Props) {
   const ruta = useRuta();
   const { salud, consultado } = useSalud();
   const { tema, alternar } = useTema();
-  const { sesion, conLogin, puedePublicar, puedeConsultar } = useSesion();
-  const [aviso, setAviso] = useState(errorIngreso);
+  const { sesion, conLogin, pideTipo, puedePublicar, puedeConsultar } = useSesion();
+  const [aviso, setAviso] = useState(avisoInicial);
   const pideIngreso = conLogin && sesion === null;
 
   // /publicar: sin sesión, la puerta a Cognito; con una cuenta que no publica, por qué no.
@@ -69,11 +74,13 @@ export default function App({ errorIngreso }: Props) {
         texto={`${tuCuenta(sesion?.grupos ?? [])} Podés ver el catálogo y cómo rindió cada modelo en su evaluación.`}
       />
     );
-  const enPortada = ruta.vista === "inicio";
+  // Sin la portada debajo, la barra no puede ir blanca sobre la imagen.
+  const enPortada = ruta.vista === "inicio" && !pideTipo;
 
   useEffect(() => {
-    if (ruta.vista !== "modelo") document.title = titulo(ruta);
-  }, [ruta]);
+    if (pideTipo) document.title = "Tipo de cuenta · Ateneo";
+    else if (ruta.vista !== "modelo") document.title = titulo(ruta);
+  }, [ruta, pideTipo]);
 
   return (
     <div className={enPortada ? "sitio sitio-portada" : "sitio"}>
@@ -90,11 +97,17 @@ export default function App({ errorIngreso }: Props) {
             </div>
           </div>
         )}
-        {ruta.vista === "inicio" && <Inicio />}
-        {ruta.vista === "modelos" && <Modelos />}
-        {ruta.vista === "modelo" && <FichaModelo key={ruta.id} id={ruta.id} />}
-        {ruta.vista === "junta" && junta}
-        {ruta.vista === "publicar" && publicar}
+        {pideTipo ? (
+          <ElegirTipoCuenta email={sesion?.email ?? null} />
+        ) : (
+          <>
+            {ruta.vista === "inicio" && <Inicio />}
+            {ruta.vista === "modelos" && <Modelos />}
+            {ruta.vista === "modelo" && <FichaModelo key={ruta.id} id={ruta.id} />}
+            {ruta.vista === "junta" && junta}
+            {ruta.vista === "publicar" && publicar}
+          </>
+        )}
       </main>
 
       <PieSitio salud={salud} consultado={consultado} />

@@ -5,7 +5,7 @@ const Module = require("node:module");
 const ts = require("typescript");
 const path = require("node:path");
 
-const archivo = path.resolve("src/utilidades/modelos.ts");
+const archivo = path.resolve(__dirname, "../src/utilidades/modelos.ts"); // desde la raíz o desde frontend/
 const compilado = ts.transpileModule(fs.readFileSync(archivo, "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;

@@ -52,3 +52,11 @@ export function duracion(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
 }
+
+/** Un mensaje de la API como oración: mayúscula al principio y punto al final, si le faltan. */
+export function oracion(texto: string): string {
+  const limpio = texto.trim();
+  if (!limpio) return limpio;
+  const conMayuscula = limpio[0].toUpperCase() + limpio.slice(1);
+  return /[.!?…]$/.test(conMayuscula) ? conMayuscula : `${conMayuscula}.`;
+}

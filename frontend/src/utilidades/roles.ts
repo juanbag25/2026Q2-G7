@@ -19,6 +19,6 @@ export function tieneAlguno(grupos: readonly string[], requeridos: readonly stri
 
 /** «Tu cuenta es de …»: para explicarle a alguien por qué no ve una sección. */
 export function tuCuenta(grupos: readonly string[]): string {
-  if (grupos.length === 0) return "Tu cuenta todavía no tiene un rol asignado: avisale a la administración de Ateneo.";
+  if (grupos.length === 0) return "Tu cuenta todavía no tiene un rol: elegí si es de una institución o de un publicador.";
   return `Tu cuenta es de ${grupos.map((g) => NOMBRES[g] ?? g).join(" y ")}.`;
 }
