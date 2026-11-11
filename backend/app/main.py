@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .api import dependencias, errores, sitio
-from .api.rutas import estudios, inferencias, modelos, publico, salud
+from .api.rutas import consultas, estudios, inferencias, modelos, publico, salud
 from .config import Settings
 
 logging.basicConfig(
@@ -49,6 +49,7 @@ def crear_app() -> FastAPI:
     app.include_router(modelos.router)
     app.include_router(estudios.router)
     app.include_router(inferencias.router)
+    app.include_router(consultas.router)    # la junta de modelos
     sitio.montar(app, os.environ.get("WEB_DIR", "/opt/ateneo/web"))   # siempre al final
     return app
 

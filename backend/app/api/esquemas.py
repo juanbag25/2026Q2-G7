@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from ..aplicacion.casos_uso.estudios import EstudioCreado
 from ..aplicacion.casos_uso.modelos import ModeloDisponible, SubidaModelo
+from ..dominio.consenso import UMBRAL_ACUERDO
+from ..dominio.consulta import MAXIMO_MODELOS, MINIMO_MODELOS, InferenciaDeJunta, InformeConsulta
 from ..dominio.modelo import Modelo
 from ..dominio.trabajo import Trabajo
 
@@ -68,6 +70,12 @@ class SubidaModeloRespuesta(BaseModel):
         )
 
 
+def _modelo_inicial(m: Modelo):
+    """El modelo del registro de la demo con esa identidad, si es uno de los incluidos."""
+    from tools.demo_assets import catalogo
+    return next((md for md in catalogo() if (md.nombre, md.version) == (m.nombre, m.version)), None)
+
+
 class ModeloRespuesta(BaseModel):
     id: UUID
     nombre: str
@@ -91,8 +99,7 @@ class ModeloRespuesta(BaseModel):
 
     @staticmethod
     def desde(m: Modelo) -> "ModeloRespuesta":
-        from tools.demo_assets import catalogo
-        inicial = next((md for md in catalogo() if (md.nombre, md.version) == (m.nombre, m.version)), None)
+        inicial = _modelo_inicial(m)
         return ModeloRespuesta(
             id=m.id, nombre=m.nombre, version=m.version, tipo_estudio=m.tipo_estudio, tarea=m.tarea,
             etiquetas=m.etiquetas, estado_evaluacion=m.estado_evaluacion, accuracy=m.accuracy,
@@ -154,4 +161,71 @@ class TrabajoRespuesta(BaseModel):
             worker_id=t.worker_id, duracion_ms=t.duracion_ms,
             resultado=ResultadoRespuesta(**t.resultado) if t.resultado else None,
             error=t.error, creado=t.creado, actualizado=t.actualizado,
+        )
+
+
+# ---- la junta -----------------------------------------------------------------------
+
+class CrearConsultaPeticion(BaseModel):
+    estudio_id: UUID
+    modelo_ids: list[UUID] = Field(min_length=MINIMO_MODELOS, max_length=MAXIMO_MODELOS)
+
+
+class ModeloEnJuntaRespuesta(BaseModel):
+    id: UUID
+    nombre: str
+    version: str
+    nombre_visible: str | None
+
+
+class PesoRespuesta(BaseModel):
+    """Con qué métrica verificada pesa el modelo en el consenso: auc o accuracy."""
+    metrica: str
+    valor: float
+
+
+class InferenciaJuntaRespuesta(TrabajoRespuesta):
+    modelo: ModeloEnJuntaRespuesta
+    peso: PesoRespuesta | None
+    coincide: bool | None
+
+    @staticmethod
+    def desde_inferencia(i: InferenciaDeJunta) -> "InferenciaJuntaRespuesta":
+        inicial = _modelo_inicial(i.modelo)
+        return InferenciaJuntaRespuesta(
+            **TrabajoRespuesta.desde(i.trabajo).model_dump(),
+            modelo=ModeloEnJuntaRespuesta(id=i.modelo.id, nombre=i.modelo.nombre, version=i.modelo.version,
+                                          nombre_visible=inicial.nombre_visible if inicial else None),
+            peso=PesoRespuesta(metrica=i.peso.metrica, valor=i.peso.valor) if i.peso else None,
+            coincide=i.coincide,
+        )
+
+
+class ConsensoRespuesta(BaseModel):
+    prediccion: str
+    probabilidades: dict[str, float]
+    acuerdo: float
+    revision_prioritaria: bool
+    umbral_acuerdo: float
+    votos: int
+
+
+class ConsultaRespuesta(BaseModel):
+    id: UUID
+    estudio_id: UUID
+    creada: datetime
+    estado: str                 # en_cola | procesando | completa | parcial | error
+    consenso: ConsensoRespuesta | None
+    inferencias: list[InferenciaJuntaRespuesta]
+
+    @staticmethod
+    def desde(r: InformeConsulta) -> "ConsultaRespuesta":
+        c = r.consenso
+        return ConsultaRespuesta(
+            id=r.consulta.id, estudio_id=r.consulta.estudio_id, creada=r.consulta.creada, estado=r.estado,
+            consenso=ConsensoRespuesta(
+                prediccion=c.prediccion, probabilidades=c.probabilidades, acuerdo=c.acuerdo,
+                revision_prioritaria=c.revision_prioritaria, umbral_acuerdo=UMBRAL_ACUERDO, votos=c.votos,
+            ) if c else None,
+            inferencias=[InferenciaJuntaRespuesta.desde_inferencia(i) for i in r.inferencias],
         )

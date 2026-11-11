@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { Modelo } from "../api/tipos";
+import { Enlace, rutaDeJunta } from "../enrutador";
+import { nombreTipo } from "../utilidades/metricas";
 import { useInferencia } from "../hooks/useInferencia";
 import { useSesion } from "../hooks/useSesion";
 import CargadorImagen from "./CargadorImagen";
@@ -95,6 +97,14 @@ export default function AnalizarEstudio({ modelo }: { modelo: Modelo }) {
         <button type="button" className="pildora pildora-borde ancha" onClick={() => elegir(null)}>
           Analizar otro estudio
         </button>
+      )}
+
+      {modelo.estado_evaluacion === "ok" && (
+        <p className="ayuda">
+          ¿Querés más de una opinión?{" "}
+          <Enlace a={rutaDeJunta({ con: modelo.id })}>Consultá a una junta</Enlace> con este y otros modelos de{" "}
+          {nombreTipo(modelo.tipo_estudio)}: cada uno analiza la imagen y el informe marca si coinciden.
+        </p>
       )}
 
       <p className="letra-chica">

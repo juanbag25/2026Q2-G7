@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, Request
 
+from ..aplicacion.casos_uso.consultas import ConsultarConsulta, CrearConsulta
 from ..aplicacion.casos_uso.estudios import CrearEstudio
 from ..aplicacion.casos_uso.inferencias import ConsultarTrabajo, EncolarInferencia
 from ..aplicacion.casos_uso.modelos import (
@@ -24,7 +25,8 @@ from ..infraestructura.aws import cliente_s3, cliente_sqs
 from ..infraestructura.cognito.verificador import VerificadorCognito
 from ..infraestructura.postgres.conexion import crear_pool
 from ..infraestructura.postgres.repositorios import (
-    RepositorioEstudiosPostgres, RepositorioModelosPostgres, RepositorioTrabajosPostgres,
+    RepositorioConsultasPostgres, RepositorioEstudiosPostgres, RepositorioModelosPostgres,
+    RepositorioTrabajosPostgres,
 )
 from ..infraestructura.reloj import RelojSistema
 from ..infraestructura.s3.almacen_estudios import AlmacenEstudiosS3
@@ -43,6 +45,8 @@ class Contenedor:
     crear_estudio: CrearEstudio
     encolar_inferencia: EncolarInferencia
     consultar_trabajo: ConsultarTrabajo
+    crear_consulta: CrearConsulta
+    consultar_consulta: ConsultarConsulta
     pool: object
     verificador: VerificadorTokens | None      # None = sin Cognito: todos anónimos
 
@@ -63,6 +67,7 @@ def armar(settings: Settings) -> Contenedor:
     modelos = RepositorioModelosPostgres(pool)
     estudios = RepositorioEstudiosPostgres(pool)
     trabajos = RepositorioTrabajosPostgres(pool)
+    consultas = RepositorioConsultasPostgres(pool)
     almacen = AlmacenEstudiosS3(s3, settings.bucket_estudios, settings.s3_url_publica)
     catalogo = CatalogoModelosS3(s3, settings.bucket_modelos, settings.prefijo_modelos, settings.s3_url_publica)
     inferencias = ColaSqs(sqs, settings.cola_inferencias_url)
@@ -84,6 +89,9 @@ def armar(settings: Settings) -> Contenedor:
         encolar_inferencia=EncolarInferencia(estudios, modelos, trabajos, almacen, reloj, inferencias,
                                              settings.bucket_modelos, settings.bucket_estudios),
         consultar_trabajo=ConsultarTrabajo(trabajos),
+        crear_consulta=CrearConsulta(estudios, modelos, consultas, almacen, reloj, inferencias,
+                                     settings.bucket_modelos, settings.bucket_estudios),
+        consultar_consulta=ConsultarConsulta(consultas, modelos),
         pool=pool,
         verificador=verificador,
     )
@@ -125,6 +133,14 @@ def dep_encolar_inferencia(request: Request) -> EncolarInferencia:
 
 def dep_consultar_trabajo(request: Request) -> ConsultarTrabajo:
     return contenedor(request).consultar_trabajo
+
+
+def dep_crear_consulta(request: Request) -> CrearConsulta:
+    return contenedor(request).crear_consulta
+
+
+def dep_consultar_consulta(request: Request) -> ConsultarConsulta:
+    return contenedor(request).consultar_consulta
 
 
 def dep_verificador(request: Request) -> VerificadorTokens | None:

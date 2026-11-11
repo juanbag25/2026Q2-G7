@@ -68,9 +68,17 @@ docker compose run --rm herramientas python tools/esperar_modelo.py --timeout 18
 docker compose run --rm herramientas python tools/esperar_modelo.py --nombre torax-rx-densenet121 --version 1.0.0
 ```
 
-El flujo se mantiene: **Modelos → ficha del modelo elegido → subir una imagen del tipo de estudio → resultado**.
-Cada consulta ejecuta solo el modelo elegido; no hay ensemble. El resultado identifica nombre
-y versión. Ateneo evalúa y ejecuta inferencias, no entrena los pesos.
+Hay dos flujos de consulta:
+
+- **Con un modelo:** Modelos → ficha del modelo elegido → subir una imagen del tipo de estudio →
+  resultado, que identifica nombre y versión.
+- **En junta:** Junta (en la barra, en el catálogo o en la ficha) → elegir de 2 a 5 modelos
+  evaluados del mismo tipo → subir la imagen una vez → cada modelo la analiza por separado, en
+  paralelo (un mensaje por modelo en la cola `inferencias`), y arriba el informe de consenso:
+  promedio de probabilidades ponderado por la métrica verificada de cada modelo, el acuerdo y
+  **revisión prioritaria** si el acuerdo baja del 70 %. Con los tres de `torax-rx` se ve entero.
+
+Ateneo evalúa y ejecuta inferencias, no entrena los pesos.
 
 Reiniciar conserva IDs y métricas de los modelos ya evaluados. Los pesos se descargan por
 revisión inmutable y SHA-256 y persisten en S3/MinIO y caché por identidad. Se versionan

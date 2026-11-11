@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import Paginacion from "../components/Paginacion";
 import TarjetaModelo from "../components/TarjetaModelo";
-import { Enlace } from "../enrutador";
+import { Enlace, rutaDeJunta } from "../enrutador";
 import { useModelos } from "../hooks/useModelos";
 import { lideres, nombreTipo } from "../utilidades/metricas";
 
@@ -50,9 +50,14 @@ export default function Modelos() {
           <h1>Modelos</h1>
           <p className="bajada">Elegí un modelo disponible, revisá su evaluación y subí una imagen desde su ficha. Si querés, también podés publicar uno propio.</p>
         </div>
-        <Enlace a="/publicar" className="pildora pildora-borde">
-          Publicar uno propio
-        </Enlace>
+        <div className="fila-accion">
+          <Enlace a={rutaDeJunta({ tipo })} className="pildora">
+            Consultar en junta
+          </Enlace>
+          <Enlace a="/publicar" className="pildora pildora-borde">
+            Publicar uno propio
+          </Enlace>
+        </div>
       </header>
 
       <div className="herramientas">

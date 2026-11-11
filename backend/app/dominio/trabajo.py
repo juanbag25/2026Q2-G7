@@ -35,9 +35,10 @@ class Trabajo:
     resultado: dict[str, Any] | None = None
     duracion_ms: int | None = None
     error: str | None = None
+    consulta_id: UUID | None = None      # la junta a la que pertenece; None = consulta individual
 
     @staticmethod
-    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime) -> "Trabajo":
+    def nuevo(estudio: Estudio, modelo: Modelo, ahora: datetime, consulta_id: UUID | None = None) -> "Trabajo":
         return Trabajo(
             id=uuid4(),
             estudio_id=estudio.id,
@@ -46,4 +47,9 @@ class Trabajo:
             intentos=0,
             creado=ahora,
             actualizado=ahora,
+            consulta_id=consulta_id,
         )
+
+    @property
+    def terminado(self) -> bool:
+        return self.estado in ("ok", "error")

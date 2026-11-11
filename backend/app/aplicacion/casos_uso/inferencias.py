@@ -25,6 +25,28 @@ def _peticion(trabajo: Trabajo, modelo: Modelo, estudio: Estudio,
     )
 
 
+def estudio_subido(estudios: RepositorioEstudios, almacen: AlmacenEstudios, estudio_id: UUID) -> Estudio:
+    """El estudio, con la subida a S3 confirmada. Conflicto si el archivo todavía no llegó."""
+    estudio = estudios.obtener(estudio_id)
+    if estudio.estado != "subido":
+        try:
+            estudio.confirmar(almacen.describir(estudio.s3_key))
+        except NoEncontrado:
+            raise Conflicto("el archivo del estudio todavía no está en S3; subilo antes de inferir") from None
+        estudios.guardar(estudio)
+    return estudio
+
+
+def mandar_a_la_cola(cola: ColaInferencias, trabajo: Trabajo, modelo: Modelo, estudio: Estudio,
+                     bucket_modelos: str, bucket_estudios: str) -> None:
+    """Un mensaje por trabajo. Si la cola no contesta, el trabajo queda `pendiente` y lo reenvía
+    el procesador: el usuario no ve un error por una falla que se arregla sola."""
+    try:
+        cola.enviar(_peticion(trabajo, modelo, estudio, bucket_modelos, bucket_estudios))
+    except ServicioNoDisponible as e:
+        log.warning("no se pudo encolar trabajo_id=%s; lo reenvía el procesador: %s", trabajo.id, e)
+
+
 class EncolarInferencia:
     """Confirma la subida, valida compatibilidad, inserta el trabajo en `pendiente` y lo
     deja en la cola `inferencias`.
@@ -46,21 +68,12 @@ class EncolarInferencia:
         self._bucket_estudios = bucket_estudios
 
     def ejecutar(self, estudio_id: UUID, modelo_id: UUID) -> Trabajo:
-        estudio = self._estudios.obtener(estudio_id)
         modelo = self._modelos.obtener(modelo_id)
-        if estudio.estado != "subido":
-            try:
-                estudio.confirmar(self._almacen.describir(estudio.s3_key))
-            except NoEncontrado:
-                raise Conflicto("el archivo del estudio todavía no está en S3; subilo antes de inferir") from None
-            self._estudios.guardar(estudio)
+        estudio = estudio_subido(self._estudios, self._almacen, estudio_id)
         modelo.verificar_compatible(estudio)
         trabajo = Trabajo.nuevo(estudio, modelo, self._reloj.ahora())
         self._trabajos.guardar(trabajo)
-        try:
-            self._cola.enviar(_peticion(trabajo, modelo, estudio, self._bucket_modelos, self._bucket_estudios))
-        except ServicioNoDisponible as e:
-            log.warning("no se pudo encolar trabajo_id=%s; lo reenvía el procesador: %s", trabajo.id, e)
+        mandar_a_la_cola(self._cola, trabajo, modelo, estudio, self._bucket_modelos, self._bucket_estudios)
         log.info("trabajo encolado trabajo_id=%s modelo=%s estudio=%s", trabajo.id, modelo.nombre, estudio.id)
         return trabajo
 
