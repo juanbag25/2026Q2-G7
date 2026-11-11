@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("WEB_DIR", "/no/existe")   # sin sitio estático en los tests
 
-from app.aplicacion.casos_uso.cuenta import ElegirTipoCuenta, TipoElegido  # noqa: E402
+from app.aplicacion.casos_uso.cuenta import ConsultarTipoCuenta, ElegirTipoCuenta, TipoElegido  # noqa: E402
 from app.api import dependencias  # noqa: E402
 from app.dominio.usuario import ADMIN_INSTITUCION, PUBLICADOR  # noqa: E402
 from app.main import crear_app  # noqa: E402
@@ -106,3 +106,33 @@ def test_sin_cognito_el_anonimo_ya_puede_todo_y_es_409():
         lambda: ElegirTipoCuenta(RepoCuentasMemoria(), None, RelojFijo()))
     r = TestClient(app).post("/api/cuenta/tipo", json={"tipo": "publicador"})
     assert r.status_code == 409 and r.json()["error"] == "conflicto"
+
+
+# ---- GET: lo que la cuenta ya tiene en Cognito ----------------------------------------
+
+def test_consultar_sin_token_es_401(cliente):
+    app, c = cliente
+    _real(app)
+    app.dependency_overrides[dependencias.dep_consultar_tipo_cuenta] = lambda: CasoFalso()
+    r = c.get("/api/cuenta/tipo")
+    assert r.status_code == 401 and r.json()["error"] == "no_autenticado"
+
+
+def test_consultar_con_una_cuenta_sin_rol_y_despues_de_elegir(cliente):
+    """El token de "sin-rol" nunca trae grupos; la respuesta dice lo que hay en Cognito."""
+    app, c = cliente
+    cognito = _real(app)
+    app.dependency_overrides[dependencias.dep_consultar_tipo_cuenta] = lambda: ConsultarTipoCuenta(cognito)
+    headers = {"Authorization": "Bearer sin-rol"}
+    assert c.get("/api/cuenta/tipo", headers=headers).json() == {"tipo": None, "grupos": []}
+    assert _elegir(c, "institucion").status_code == 200
+    r = c.get("/api/cuenta/tipo", headers=headers)
+    assert r.status_code == 200 and r.json() == {"tipo": "institucion", "grupos": ["admin_institucion"]}
+
+
+def test_consultar_con_cognito_caido_es_502(cliente):
+    app, c = cliente
+    cognito = _real(app, caido=True)
+    app.dependency_overrides[dependencias.dep_consultar_tipo_cuenta] = lambda: ConsultarTipoCuenta(cognito)
+    r = c.get("/api/cuenta/tipo", headers={"Authorization": "Bearer sin-rol"})
+    assert r.status_code == 502 and r.json()["error"] == "servicio_no_disponible"

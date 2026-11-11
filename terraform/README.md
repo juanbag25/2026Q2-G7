@@ -114,7 +114,9 @@ este, con el sitio en S3 (cambia también la decisión 11).
   (`AdminAddUserToGroup`). Una elección distinta de la guardada, o un grupo distinto en Cognito,
   es `409`. Las tareas de la api llaman a Cognito como `LabRole`, por el NAT. Después el sitio
   vuelve a pasar por el login: la sesión de Cognito dura una hora, así que no pide la contraseña,
-  y el token nuevo trae el grupo.
+  y el token nuevo trae el grupo. Antes de preguntar, el sitio consulta `GET /api/cuenta/tipo`: si
+  la cuenta ya eligió (en otro navegador, o el token es de antes de elegir), trae un token nuevo
+  en vez de volver a preguntar.
 - **Por qué no se elige en el formulario de Cognito.** Un atributo propio no puede ser
   obligatorio, el Hosted UI lo muestra como texto libre y no se completa por URL, y el Hosted UI
   no les pasa `clientMetadata` a los disparadores. Un formulario de alta propio haría tipear la

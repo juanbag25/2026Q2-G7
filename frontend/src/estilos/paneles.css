@@ -482,6 +482,15 @@
   text-align: center;
 }
 
+.revisando-cuenta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-block: 48px;
+  color: var(--texto-suave);
+}
+
 .destacado {
   display: flex;
   flex-direction: column;

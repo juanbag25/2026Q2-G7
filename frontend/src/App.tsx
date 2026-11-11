@@ -37,6 +37,8 @@ interface Props {
    * state ajeno), o la cuenta ya tenía otro tipo cuando se eligió uno (409).
    */
   avisoInicial: string | null;
+  /** Esta carga es la vuelta de un ingreso que pidió el sitio para traer un token nuevo. */
+  trasRefrescar: boolean;
 }
 
 /**
@@ -45,7 +47,7 @@ interface Props {
  * ficha, una de institución o de médico. Una cuenta recién registrada desde «Ingresar» no tiene
  * ninguna de las dos: hasta que elija, en cualquier ruta se ve solo esa pregunta.
  */
-export default function App({ avisoInicial }: Props) {
+export default function App({ avisoInicial, trasRefrescar }: Props) {
   const ruta = useRuta();
   const { salud, consultado } = useSalud();
   const { tema, alternar } = useTema();
@@ -98,7 +100,7 @@ export default function App({ avisoInicial }: Props) {
           </div>
         )}
         {pideTipo ? (
-          <ElegirTipoCuenta email={sesion?.email ?? null} />
+          <ElegirTipoCuenta email={sesion?.email ?? null} trasRefrescar={trasRefrescar} />
         ) : (
           <>
             {ruta.vista === "inicio" && <Inicio />}

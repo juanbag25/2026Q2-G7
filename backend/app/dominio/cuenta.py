@@ -10,6 +10,8 @@ infraestructura.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from .errores import EntradaInvalida
 from .usuario import ADMIN_INSTITUCION, PUBLICADOR
 
@@ -25,3 +27,11 @@ def grupo_del_tipo(tipo: str) -> str:
     if tipo not in GRUPO_POR_TIPO:
         raise EntradaInvalida(f"el tipo de cuenta es «institucion» o «publicador», no «{tipo}»")
     return GRUPO_POR_TIPO[tipo]
+
+
+def tipo_de_los_grupos(grupos: Iterable[str]) -> str | None:
+    """El tipo que corresponde a esos grupos, si tienen el de uno solo de los dos. Un médico, un
+    admin o una cuenta sin grupos no tienen tipo."""
+    grupos = set(grupos)
+    tipos = [tipo for tipo, grupo in GRUPO_POR_TIPO.items() if grupo in grupos]
+    return tipos[0] if len(tipos) == 1 else None

@@ -17,6 +17,20 @@ export function tieneAlguno(grupos: readonly string[], requeridos: readonly stri
   return grupos.some((g) => requeridos.includes(g));
 }
 
+/**
+ * Qué hacer cuando el token dice que la cuenta no tiene grupos, según los que tiene en Cognito
+ * ahora (GET /api/cuenta/tipo). Si ya tiene alguno, el token es de antes de elegir: se trae uno
+ * nuevo. Si esta carga ya es la vuelta de ese pedido, se avisa en vez de volver al login, que
+ * daría vueltas sin fin.
+ */
+export function antesDePreguntar(
+  gruposReales: readonly string[],
+  trasRefrescar: boolean,
+): "preguntar" | "refrescar" | "avisar" {
+  if (gruposReales.length === 0) return "preguntar";
+  return trasRefrescar ? "avisar" : "refrescar";
+}
+
 /** «Tu cuenta es de …»: para explicarle a alguien por qué no ve una sección. */
 export function tuCuenta(grupos: readonly string[]): string {
   if (grupos.length === 0) return "Tu cuenta todavía no tiene un rol: elegí si es de una institución o de un publicador.";

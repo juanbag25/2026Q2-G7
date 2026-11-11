@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from ..aplicacion.casos_uso.cuenta import TipoElegido
+from ..aplicacion.casos_uso.cuenta import EstadoCuenta, TipoElegido
 from ..aplicacion.casos_uso.estudios import EstudioCreado
 from ..aplicacion.casos_uso.modelos import ModeloDisponible, SubidaModelo
 from ..dominio.consenso import UMBRAL_ACUERDO
@@ -246,3 +246,12 @@ class TipoCuentaRespuesta(BaseModel):
     @staticmethod
     def desde(t: TipoElegido) -> "TipoCuentaRespuesta":
         return TipoCuentaRespuesta(tipo=t.tipo, grupo=t.grupo)
+
+
+class EstadoCuentaRespuesta(BaseModel):
+    tipo: str | None            # institucion | publicador; null si todavía no eligió (o es médico o admin)
+    grupos: list[str]           # los de Cognito ahora, que pueden no ser los del token
+
+    @staticmethod
+    def desde(e: EstadoCuenta) -> "EstadoCuentaRespuesta":
+        return EstadoCuentaRespuesta(tipo=e.tipo, grupos=list(e.grupos))

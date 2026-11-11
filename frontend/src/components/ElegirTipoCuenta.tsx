@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ErrorApi, mensajeDeError } from "../api/cliente";
 import type { TipoCuenta } from "../api/configuracion";
-import { elegirTipoCuenta } from "../api/cuenta";
+import { elegirTipoCuenta, leerTipoCuenta } from "../api/cuenta";
 import { ingresarDeNuevo } from "../api/sesion";
 import { oracion } from "../utilidades/formato";
+import { antesDePreguntar, tuCuenta } from "../utilidades/roles";
 import { Flecha } from "./Navegacion";
 
 const TIPOS: { tipo: TipoCuenta; nombre: string; texto: string }[] = [
@@ -21,6 +22,8 @@ const TIPOS: { tipo: TipoCuenta; nombre: string; texto: string }[] = [
 
 interface Props {
   email: string | null;
+  /** Esta carga ya es la vuelta de un ingreso que pidió el sitio para traer un token nuevo. */
+  trasRefrescar: boolean;
 }
 
 /**
@@ -28,10 +31,39 @@ interface Props {
  * tiene grupo. Elige una vez; la API fija la elección y agrega el grupo en Cognito. El token del
  * navegador es de antes de elegir, así que con un 200, o con un 409 (ya tenía un tipo), se vuelve a
  * pasar por el login, que no pide la contraseña y trae el grupo que quedó.
+ *
+ * Antes de preguntar, revisa lo que la cuenta tiene en Cognito: si ya eligió (en otro navegador,
+ * o cerró este antes de volver del login), el token es viejo y trae uno nuevo en vez de preguntar.
  */
-export default function ElegirTipoCuenta({ email }: Props) {
+export default function ElegirTipoCuenta({ email, trasRefrescar }: Props) {
+  const [fase, setFase] = useState<"revisando" | "refrescando" | "preguntando">("revisando");
   const [enviando, setEnviando] = useState<TipoCuenta | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let vigente = true;
+    leerTipoCuenta()
+      .then(({ grupos }) => {
+        if (!vigente) return;
+        const paso = antesDePreguntar(grupos, trasRefrescar);
+        if (paso === "refrescar") {
+          setFase("refrescando");
+          ingresarDeNuevo();
+          return;
+        }
+        if (paso === "avisar") {
+          setError(`${tuCuenta(grupos)} Pero el ingreso volvió sin ese rol: salí y volvé a ingresar.`);
+        }
+        setFase("preguntando");
+      })
+      .catch(() => {
+        // Sin poder revisar, se pregunta igual: al elegir, la API decide con lo que hay en Cognito.
+        if (vigente) setFase("preguntando");
+      });
+    return () => {
+      vigente = false;
+    };
+  }, [trasRefrescar]);
 
   const elegir = async (tipo: TipoCuenta) => {
     setEnviando(tipo);
@@ -49,6 +81,17 @@ export default function ElegirTipoCuenta({ email }: Props) {
       setEnviando(null);
     }
   };
+
+  if (fase !== "preguntando") {
+    return (
+      <div className="marco angosto pagina">
+        <p className="revisando-cuenta" role="status">
+          <span className="spinner grande" aria-hidden="true" />
+          {fase === "revisando" ? "Revisando tu cuenta…" : "Tu cuenta ya tiene su tipo: actualizando la sesión…"}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="marco angosto pagina">

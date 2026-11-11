@@ -19,6 +19,7 @@ function cargar(relativa) {
 
 const { cargarConfiguracion, clienteDeIngreso, configuracion } = cargar("src/api/configuracion.ts");
 const { oracion } = cargar("src/utilidades/formato.ts");
+const { antesDePreguntar } = cargar("src/utilidades/roles.ts");
 
 /** Lo que contesta el bucket web a GET /config.json. */
 function servir(cuerpo) {
@@ -70,4 +71,15 @@ test("los avisos de la API se leen como oraciones", () => {
   );
   assert.equal(oracion("Tu sesión venció. Ingresá de nuevo para seguir."), "Tu sesión venció. Ingresá de nuevo para seguir.");
   assert.equal(oracion("  "), "");
+});
+
+test("antes de preguntar: sin grupos en Cognito pregunta; con grupos, trae un token nuevo una sola vez", () => {
+  // Recién registrada: no eligió en ningún lado.
+  assert.equal(antesDePreguntar([], false), "preguntar");
+  assert.equal(antesDePreguntar([], true), "preguntar");
+  // Eligió en otro navegador, o cerró este antes de volver del login: el token es viejo.
+  assert.equal(antesDePreguntar(["admin_institucion"], false), "refrescar");
+  assert.equal(antesDePreguntar(["medico"], false), "refrescar");
+  // Ya volvió de ese pedido y el token sigue sin el grupo: avisa en vez de dar vueltas.
+  assert.equal(antesDePreguntar(["admin_institucion"], true), "avisar");
 });

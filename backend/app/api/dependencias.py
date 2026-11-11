@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from fastapi import Depends, Request
 
 from ..aplicacion.casos_uso.consultas import ConsultarConsulta, CrearConsulta
-from ..aplicacion.casos_uso.cuenta import ElegirTipoCuenta
+from ..aplicacion.casos_uso.cuenta import ConsultarTipoCuenta, ElegirTipoCuenta
 from ..aplicacion.casos_uso.estudios import CrearEstudio
 from ..aplicacion.casos_uso.inferencias import ConsultarTrabajo, EncolarInferencia
 from ..aplicacion.casos_uso.modelos import (
@@ -51,6 +51,7 @@ class Contenedor:
     crear_consulta: CrearConsulta
     consultar_consulta: ConsultarConsulta
     elegir_tipo_cuenta: ElegirTipoCuenta
+    consultar_tipo_cuenta: ConsultarTipoCuenta
     pool: object
     verificador: VerificadorTokens | None      # None = sin Cognito: todos anónimos
 
@@ -99,6 +100,7 @@ def armar(settings: Settings) -> Contenedor:
                                      settings.bucket_modelos, settings.bucket_estudios),
         consultar_consulta=ConsultarConsulta(consultas, modelos),
         elegir_tipo_cuenta=ElegirTipoCuenta(RepositorioCuentasPostgres(pool), directorio, reloj),
+        consultar_tipo_cuenta=ConsultarTipoCuenta(directorio),
         pool=pool,
         verificador=verificador,
     )
@@ -152,6 +154,10 @@ def dep_consultar_consulta(request: Request) -> ConsultarConsulta:
 
 def dep_elegir_tipo_cuenta(request: Request) -> ElegirTipoCuenta:
     return contenedor(request).elegir_tipo_cuenta
+
+
+def dep_consultar_tipo_cuenta(request: Request) -> ConsultarTipoCuenta:
+    return contenedor(request).consultar_tipo_cuenta
 
 
 def dep_verificador(request: Request) -> VerificadorTokens | None:

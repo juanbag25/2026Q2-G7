@@ -31,9 +31,25 @@ const CLAVE_SESION = "ateneo:sesion";
 const CLAVE_ESTADO = "ateneo:login-estado"; // sessionStorage: solo esta pestaña
 const CLAVE_VOLVER = "ateneo:login-volver";
 const CLAVE_AVISO = "ateneo:login-aviso"; // un aviso que sobrevive a la vuelta por Cognito
+const CLAVE_REFRESCO = "ateneo:login-refresco"; // esta vuelta la pidió el sitio, por un token nuevo
 
 const oyentes = new Set<() => void>();
 let sesion: Sesion | null = leerGuardada();
+
+/** Vuelve a leer la sesión guardada, sin escribirla: la cambió otra pestaña. */
+function releer(): void {
+  sesion = leerGuardada();
+  for (const oyente of oyentes) oyente();
+}
+
+// Otra pestaña ingresó, eligió el tipo de cuenta o salió: esta toma la misma sesión sin recargar.
+window.addEventListener("storage", (e) => {
+  if (e.key === CLAVE_SESION || e.key === null) releer();
+});
+// «Atrás» puede devolver la página tal como estaba en memoria, con la sesión de antes del login.
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) releer();
+});
 
 function leerGuardada(): Sesion | null {
   try {
@@ -128,6 +144,7 @@ export function ingresar(): void {
  */
 export function ingresarDeNuevo(aviso?: string): void {
   try {
+    window.sessionStorage.setItem(CLAVE_REFRESCO, "1");
     if (aviso) window.sessionStorage.setItem(CLAVE_AVISO, aviso);
   } catch {
     // Sin sessionStorage el aviso se pierde; el ingreso igual trae el grupo que haya.
@@ -135,14 +152,25 @@ export function ingresarDeNuevo(aviso?: string): void {
   ingresar();
 }
 
-/** El aviso que dejó ingresarDeNuevo(), una sola vez. */
-export function tomarAviso(): string | null {
+/** Lo que dejó ingresarDeNuevo() para la vuelta. */
+export interface Vuelta {
+  /** Esta carga es la vuelta de un ingreso que pidió el sitio para traer un token nuevo. */
+  refresco: boolean;
+  aviso: string | null;
+}
+
+/** Se llama una vez, al arrancar: lo que dejó ingresarDeNuevo(), y lo borra. */
+export function tomarVuelta(): Vuelta {
   try {
-    const aviso = window.sessionStorage.getItem(CLAVE_AVISO);
+    const vuelta = {
+      refresco: window.sessionStorage.getItem(CLAVE_REFRESCO) !== null,
+      aviso: window.sessionStorage.getItem(CLAVE_AVISO),
+    };
+    window.sessionStorage.removeItem(CLAVE_REFRESCO);
     window.sessionStorage.removeItem(CLAVE_AVISO);
-    return aviso;
+    return vuelta;
   } catch {
-    return null;
+    return { refresco: false, aviso: null };
   }
 }
 

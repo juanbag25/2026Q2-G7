@@ -293,7 +293,9 @@ Los mensajes de `resultados`:
   aunque conteste `409`, así un alta que se cortó a mitad de camino se completa y después de un
   `409` el login siempre trae un grupo. Las llamadas admin usan el claim `username` del access
   token (`Usuario.username`), que no tiene por qué ser el `sub`. Sin Cognito no hay directorio y
-  la ruta contesta `409`: el anónimo ya tiene todos los roles.
+  la ruta contesta `409`: el anónimo ya tiene todos los roles. `GET /api/cuenta/tipo`
+  (`ConsultarTipoCuenta`) devuelve los grupos que la cuenta tiene en Cognito ahora y el tipo que
+  les corresponde: el sitio lo consulta antes de preguntar.
 - La interfaz solo esconde lo que la cuenta no puede hacer (`frontend/src/utilidades/roles.ts`,
   espejo de las dos reglas); decide el backend.
 
@@ -443,6 +445,11 @@ src/
   a `POST /api/cuenta/tipo` (`api/cuenta.ts`); con `200` o `409` vuelve a pasar por el login
   (`ingresarDeNuevo`), que no pide la contraseña y trae el token con el grupo, y el `409` deja un
   aviso en `sessionStorage` que se muestra a la vuelta. Cualquier otro error se muestra ahí mismo.
+  Antes de preguntar consulta `GET /api/cuenta/tipo`: si la cuenta ya tiene grupo en Cognito
+  (eligió en otro navegador, o el token es de antes de elegir), trae un token nuevo en vez de
+  preguntar, una sola vez por vuelta para no quedar dando vueltas (`antesDePreguntar`, en
+  `utilidades/roles.ts`). Además, `sesion.ts` toma la sesión que guarda otra pestaña (evento
+  `storage`) y relee la guardada cuando «atrás» devuelve la página desde memoria (`pageshow`).
 - **Ruteo propio, no react-router.** `enrutador.tsx` es `useSyncExternalStore` sobre
   `history.pushState` más un `<Enlace>` que respeta ctrl/cmd/click del medio. Son tres rutas fijas
   y una dependencia menos; el bucket web devuelve `index.html` como documento de error (y `sitio.py`
