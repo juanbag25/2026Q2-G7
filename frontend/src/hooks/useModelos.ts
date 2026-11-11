@@ -37,11 +37,12 @@ export interface EstadoModelos {
  * Carga el catálogo y, si hay sesión, los modelos disponibles en el bucket.
  *
  * El catálogo es público, así que la portada lo muestra a quien no ingresó. Lo del bucket pide
- * token: pedirlo sin sesión devolvía 401 y la portada se llenaba de «tu sesión venció».
+ * token y una cuenta que publica: pedirlo sin sesión devolvía 401 (la portada se llenaba de «tu
+ * sesión venció»), y con una cuenta de institución, 403.
  */
 export function useModelos(): EstadoModelos {
-  const { sesion, conLogin } = useSesion();
-  const conSesion = !conLogin || sesion !== null;
+  // En local (sin login) se puede todo; con login, hace falta una sesión de una cuenta que publica.
+  const { puedePublicar: pedirDisponibles } = useSesion();
   const [publicados, setPublicados] = useState<Modelo[]>([]);
   const [disponibles, setDisponibles] = useState<ModeloDisponible[]>([]);
   const [cargando, setCargando] = useState(true);
@@ -65,7 +66,7 @@ export function useModelos(): EstadoModelos {
     try {
       const [p, d, estadoDemo] = await Promise.all([
         listarPublicados(),
-        conSesion ? listarDisponibles() : Promise.resolve<ModeloDisponible[]>([]),
+        pedirDisponibles ? listarDisponibles() : Promise.resolve<ModeloDisponible[]>([]),
         get<EstadoDemo>("/publico/demo"),
       ]);
       if (!montado.current) return;
@@ -79,7 +80,7 @@ export function useModelos(): EstadoModelos {
       if (montado.current) setCargando(false);
       consultando.current = false;
     }
-  }, [conSesion]);
+  }, [pedirDisponibles]);
 
   useEffect(() => {
     void refrescar();

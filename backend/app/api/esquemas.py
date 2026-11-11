@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from ..aplicacion.casos_uso.cuenta import EstadoCuenta, TipoElegido
 from ..aplicacion.casos_uso.estudios import EstudioCreado
 from ..aplicacion.casos_uso.modelos import ModeloDisponible, SubidaModelo
 from ..dominio.consenso import UMBRAL_ACUERDO
@@ -229,3 +230,28 @@ class ConsultaRespuesta(BaseModel):
             ) if c else None,
             inferencias=[InferenciaJuntaRespuesta.desde_inferencia(i) for i in r.inferencias],
         )
+
+
+# ---- el tipo de cuenta --------------------------------------------------------------
+
+class ElegirTipoCuentaPeticion(BaseModel):
+    # institucion | publicador. El resto lo rechaza el dominio (422): ni médico ni admin se eligen.
+    tipo: str = Field(max_length=40)
+
+
+class TipoCuentaRespuesta(BaseModel):
+    tipo: str                   # institucion | publicador
+    grupo: str                  # el grupo de Cognito: admin_institucion | publicador
+
+    @staticmethod
+    def desde(t: TipoElegido) -> "TipoCuentaRespuesta":
+        return TipoCuentaRespuesta(tipo=t.tipo, grupo=t.grupo)
+
+
+class EstadoCuentaRespuesta(BaseModel):
+    tipo: str | None            # institucion | publicador; null si todavía no eligió (o es médico o admin)
+    grupos: list[str]           # los de Cognito ahora, que pueden no ser los del token
+
+    @staticmethod
+    def desde(e: EstadoCuenta) -> "EstadoCuentaRespuesta":
+        return EstadoCuentaRespuesta(tipo=e.tipo, grupos=list(e.grupos))

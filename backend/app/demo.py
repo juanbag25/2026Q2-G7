@@ -11,6 +11,7 @@ from tools.demo_assets import (catalogo, comprobar, escribir_json, leer)
 
 
 from .aplicacion.casos_uso.modelos import PublicarModelo
+from .dominio.usuario import Usuario
 from .infraestructura.postgres.repositorios import RepositorioModelosPostgres
 from .infraestructura.reloj import RelojSistema
 from .infraestructura.s3.catalogo_modelos import CatalogoModelosS3
@@ -94,7 +95,7 @@ class InicializarModelo:
             else:
                 caso = PublicarModelo(CatalogoModelosS3(self.s3, s.bucket_modelos), modelos,
                                       RelojSistema(), s.prefijo_modelos, OutboxDemo(conn, md.clave))
-                modelo = caso.ejecutar(md.nombre, md.version)
+                modelo = caso.ejecutar(Usuario.plataforma(), md.nombre, md.version)
                 log.info("demo registrada: %s; evaluación pendiente de envío", modelo.id)
             # Una publicación manual pendiente puede no tener outbox: esperar antes de recuperar.
             from .aplicacion.puertos import PeticionEvaluacion

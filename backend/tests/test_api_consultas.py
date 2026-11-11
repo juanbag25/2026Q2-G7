@@ -15,9 +15,12 @@ from app.dominio.consulta import Consulta  # noqa: E402
 from app.dominio.errores import Conflicto, EntradaInvalida, NoAutenticado, NoEncontrado  # noqa: E402
 from app.dominio.estudio import Estudio  # noqa: E402
 from app.dominio.modelo import Modelo  # noqa: E402
+from app.dominio.usuario import Usuario  # noqa: E402
 from app.main import crear_app  # noqa: E402
 
-from .fakes import RelojFijo  # noqa: E402
+from .fakes import MEDICO_A, RelojFijo  # noqa: E402
+from .test_api import CUENTAS  # noqa: E402
+from .test_api import VerificadorFalso as VerificadorConCuentas  # noqa: E402
 
 
 class CasoFalso:
@@ -43,7 +46,7 @@ def _informe(terminada: bool):
         for n, auc in (("torax-rx-densenet121", 0.98), ("otro", 0.9))
     ]
     consulta = Consulta.junta(estudio, modelos, t)
-    trabajos = consulta.trabajos_para(estudio, modelos, t)
+    trabajos = consulta.trabajos_para(estudio, modelos, t, creado_por=MEDICO_A.sub)
     if terminada:
         for trabajo, p in zip(trabajos, (0.9, 0.2)):
             trabajo.estado = "ok"
@@ -78,7 +81,7 @@ def test_crear_junta_202_en_cola(cliente):
     assert [i["estado"] for i in cuerpo["inferencias"]] == ["pendiente", "pendiente"]
     assert cuerpo["inferencias"][0]["modelo"]["nombre_visible"] == "DenseNet121 · Neumonía"   # del registro
     assert cuerpo["inferencias"][0]["peso"] == {"metrica": "auc", "valor": 0.98}
-    assert caso.llamadas == [((estudio_id, [m.id for m in modelos]), {})]
+    assert caso.llamadas == [((Usuario.anonimo(), estudio_id, [m.id for m in modelos]), {})]
 
 
 @pytest.mark.parametrize("cuantos", [1, 6])
@@ -133,3 +136,32 @@ def test_la_junta_pide_token(cliente):
     assert c.post("/api/consultas", json={"estudio_id": str(uuid4()),
                                           "modelo_ids": [str(uuid4()), str(uuid4())]}).status_code == 401
     assert c.get(f"/api/consultas/{uuid4()}").status_code == 401
+
+
+# ---- con permisos: la junta pide el mismo rol que una consulta individual ---------------
+
+CONSULTAN = {"medico", "institucion", "admin"}
+
+
+def _pedir_con_cuenta(app, c, cuenta, metodo, ruta, cuerpo, dep):
+    informe, _ = _informe(terminada=False)
+    caso = CasoFalso(resultado=informe)
+    app.dependency_overrides[dependencias.dep_verificador] = lambda: VerificadorConCuentas()
+    app.dependency_overrides[getattr(dependencias, dep)] = lambda: caso
+    return c.request(metodo, ruta, json=cuerpo, headers={"Authorization": f"Bearer {cuenta}"}), caso
+
+
+@pytest.mark.parametrize("metodo, ruta, cuerpo, dep", [
+    ("POST", "/api/consultas", {"estudio_id": str(uuid4()), "modelo_ids": [str(uuid4()), str(uuid4())]},
+     "dep_crear_consulta"),
+    ("GET", f"/api/consultas/{uuid4()}", None, "dep_consultar_consulta"),
+])
+def test_la_junta_es_para_instituciones_medicos_y_admins(cliente, metodo, ruta, cuerpo, dep):
+    for cuenta in sorted(set(CUENTAS) - CONSULTAN):
+        r, caso = _pedir_con_cuenta(*cliente, cuenta, metodo, ruta, cuerpo, dep)
+        assert r.status_code == 403, cuenta
+        assert r.json()["error"] == "sin_permiso" and caso.llamadas == []
+    for cuenta in sorted(CONSULTAN):
+        r, caso = _pedir_con_cuenta(*cliente, cuenta, metodo, ruta, cuerpo, dep)
+        assert r.status_code < 300, (cuenta, r.status_code, r.text)
+        assert caso.llamadas[0][0][0] == CUENTAS[cuenta]          # el caso de uso sabe quién es

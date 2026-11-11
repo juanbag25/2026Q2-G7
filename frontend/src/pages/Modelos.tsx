@@ -3,6 +3,7 @@ import Paginacion from "../components/Paginacion";
 import TarjetaModelo from "../components/TarjetaModelo";
 import { Enlace, rutaDeJunta } from "../enrutador";
 import { useModelos } from "../hooks/useModelos";
+import { useSesion } from "../hooks/useSesion";
 import { lideres, nombreTipo } from "../utilidades/metricas";
 
 const POR_PAGINA = 9;
@@ -12,6 +13,7 @@ type Orden = "accuracy" | "recientes";
 /** El catálogo: tarjetas filtrables por tipo de estudio, de a nueve por página. */
 export default function Modelos() {
   const { publicados, cargando, error, refrescar } = useModelos();
+  const { ofrecerPublicar, ofrecerConsultar } = useSesion();
   const [busqueda, setBusqueda] = useState("");
   const [tipo, setTipo] = useState<string | null>(null);
   const [orden, setOrden] = useState<Orden>("accuracy");
@@ -50,14 +52,20 @@ export default function Modelos() {
           <h1>Modelos</h1>
           <p className="bajada">Elegí un modelo disponible, revisá su evaluación y subí una imagen desde su ficha. Si querés, también podés publicar uno propio.</p>
         </div>
-        <div className="fila-accion">
-          <Enlace a={rutaDeJunta({ tipo })} className="pildora">
-            Consultar en junta
-          </Enlace>
-          <Enlace a="/publicar" className="pildora pildora-borde">
-            Publicar uno propio
-          </Enlace>
-        </div>
+        {(ofrecerConsultar || ofrecerPublicar) && (
+          <div className="fila-accion">
+            {ofrecerConsultar && (
+              <Enlace a={rutaDeJunta({ tipo })} className="pildora">
+                Consultar en junta
+              </Enlace>
+            )}
+            {ofrecerPublicar && (
+              <Enlace a="/publicar" className="pildora pildora-borde">
+                Publicar uno propio
+              </Enlace>
+            )}
+          </div>
+        )}
       </header>
 
       <div className="herramientas">
@@ -117,9 +125,11 @@ export default function Modelos() {
           {publicados.length === 0 ? (
             <>
               <p>Todavía no hay modelos publicados.</p>
-              <Enlace a="/publicar" className="pildora pildora-oscura">
-                Publicar el primero
-              </Enlace>
+              {ofrecerPublicar && (
+                <Enlace a="/publicar" className="pildora pildora-oscura">
+                  Publicar el primero
+                </Enlace>
+              )}
             </>
           ) : (
             <p>Ningún modelo coincide con la búsqueda.</p>

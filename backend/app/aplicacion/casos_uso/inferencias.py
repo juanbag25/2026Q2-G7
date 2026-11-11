@@ -7,6 +7,7 @@ from ...dominio.errores import Conflicto, NoEncontrado, ServicioNoDisponible
 from ...dominio.estudio import Estudio
 from ...dominio.modelo import Modelo
 from ...dominio.trabajo import Trabajo
+from ...dominio.usuario import Usuario
 from ..puertos import (
     AlmacenEstudios, ColaInferencias, PeticionInferencia, Reloj, RepositorioEstudios,
     RepositorioModelos, RepositorioTrabajos, TrabajosSinEnviar,
@@ -25,9 +26,13 @@ def _peticion(trabajo: Trabajo, modelo: Modelo, estudio: Estudio,
     )
 
 
-def estudio_subido(estudios: RepositorioEstudios, almacen: AlmacenEstudios, estudio_id: UUID) -> Estudio:
-    """El estudio, con la subida a S3 confirmada. Conflicto si el archivo todavía no llegó."""
+def estudio_subido(estudios: RepositorioEstudios, almacen: AlmacenEstudios, usuario: Usuario,
+                   estudio_id: UUID) -> Estudio:
+    """El estudio de `usuario`, con la subida a S3 confirmada. El ajeno da el mismo 404 que uno que
+    no existe, antes de tocar nada; Conflicto si el archivo todavía no llegó."""
     estudio = estudios.obtener(estudio_id)
+    if not usuario.es_suyo(estudio.creado_por):
+        raise NoEncontrado(f"no existe el estudio {estudio_id}")
     if estudio.estado != "subido":
         try:
             estudio.confirmar(almacen.describir(estudio.s3_key))
@@ -67,11 +72,12 @@ class EncolarInferencia:
         self._bucket_modelos = bucket_modelos
         self._bucket_estudios = bucket_estudios
 
-    def ejecutar(self, estudio_id: UUID, modelo_id: UUID) -> Trabajo:
+    def ejecutar(self, usuario: Usuario, estudio_id: UUID, modelo_id: UUID) -> Trabajo:
+        # El estudio primero: si es de otro, ni se busca el modelo ni se confirma la subida.
+        estudio = estudio_subido(self._estudios, self._almacen, usuario, estudio_id)
         modelo = self._modelos.obtener(modelo_id)
-        estudio = estudio_subido(self._estudios, self._almacen, estudio_id)
         modelo.verificar_compatible(estudio)
-        trabajo = Trabajo.nuevo(estudio, modelo, self._reloj.ahora())
+        trabajo = Trabajo.nuevo(estudio, modelo, self._reloj.ahora(), creado_por=usuario.sub)
         self._trabajos.guardar(trabajo)
         mandar_a_la_cola(self._cola, trabajo, modelo, estudio, self._bucket_modelos, self._bucket_estudios)
         log.info("trabajo encolado trabajo_id=%s modelo=%s estudio=%s", trabajo.id, modelo.nombre, estudio.id)
@@ -79,11 +85,17 @@ class EncolarInferencia:
 
 
 class ConsultarTrabajo:
+    """El trabajo, si es de quien pregunta. El ajeno da el mismo 404 que uno que no existe: tener
+    el UUID no alcanza, y la respuesta no confirma que esté."""
+
     def __init__(self, trabajos: RepositorioTrabajos):
         self._trabajos = trabajos
 
-    def ejecutar(self, id: UUID) -> Trabajo:
-        return self._trabajos.obtener(id)
+    def ejecutar(self, usuario: Usuario, id: UUID) -> Trabajo:
+        trabajo = self._trabajos.obtener(id)
+        if not usuario.es_suyo(trabajo.creado_por):
+            raise NoEncontrado(f"no existe el trabajo {id}")
+        return trabajo
 
 
 class ReenviarPendientes:

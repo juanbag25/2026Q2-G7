@@ -36,26 +36,41 @@ export function Flecha() {
   );
 }
 
-/** Barra superior: marca, las secciones en una píldora, tema y sesión. */
+/**
+ * Barra superior: marca, las secciones en una píldora, tema y sesión. Mientras la cuenta no eligió
+ * su tipo no hay a dónde ir (cualquier ruta muestra la pregunta): sin secciones y con el logo sin
+ * enlace, pero con «Salir», por si se registró con otro mail.
+ */
 export default function Navegacion({ sobrePortada, tema, onAlternarTema }: Props) {
-  const { sesion, conLogin } = useSesion();
+  const { sesion, conLogin, pideTipo, ofrecerPublicar, ofrecerConsultar } = useSesion();
+  const marca = (
+    <>
+      <Marca tamano={24} />
+      <span className="logo-texto">Ateneo</span>
+    </>
+  );
 
   return (
     <header className={sobrePortada ? "barra barra-portada" : "barra"}>
       <div className="barra-interior">
-        <Enlace a="/" className="logo">
-          <Marca tamano={24} />
-          <span className="logo-texto">Ateneo</span>
-        </Enlace>
-
-        <nav className="menu" aria-label="Secciones">
-          <Enlace a="/">Inicio</Enlace>
-          <Enlace a="/modelos" prefijo>
-            Modelos
+        {pideTipo ? (
+          <span className="logo">{marca}</span>
+        ) : (
+          <Enlace a="/" className="logo">
+            {marca}
           </Enlace>
-          <Enlace a="/junta">Junta</Enlace>
-          <Enlace a="/publicar">Publicar</Enlace>
-        </nav>
+        )}
+
+        {!pideTipo && (
+          <nav className="menu" aria-label="Secciones">
+            <Enlace a="/">Inicio</Enlace>
+            <Enlace a="/modelos" prefijo>
+              Modelos
+            </Enlace>
+            {ofrecerConsultar && <Enlace a="/junta">Junta</Enlace>}
+            {ofrecerPublicar && <Enlace a="/publicar">Publicar</Enlace>}
+          </nav>
+        )}
 
         <div className="barra-fin">
           <button

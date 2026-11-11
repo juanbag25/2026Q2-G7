@@ -22,7 +22,7 @@ sobre `terraform/modules`).
 | Grupos de seguridad encadenados; procesador, worker, evaluador y constructor sin entrada | `seguridad.tf` |
 | API Gateway (HTTP API, HTTPS) → VPC Link → ALB interno + WAF | `api.tf`, `balanceador.tf` |
 | El autorizador JWT en todo `/api/*` salvo `/api/health` y `/api/publico/*`, que es el catálogo que ve el Visitante | `api.tf`, `backend/app/api/rutas/publico.py` |
-| Cognito: cuatro grupos, Hosted UI, Lambda de post-confirmación, admin inicial | `cognito.tf` |
+| Cognito: cuatro grupos, Hosted UI con tres clientes («Ingresar» y crear cuenta de cada tipo), Lambda de post-confirmación, admin inicial | `cognito.tf` |
 | El login de la clase: sitio en S3 y Lambda en `/callback` | `cognito.tf`, `api.tf`, `lambda/` |
 | ECS Fargate: api, procesador, worker, evaluador | `ecs.tf`, `escalado.tf` |
 | ECR y el constructor de imágenes | `imagenes.tf`, `plantillas/constructor.sh.tftpl` |
@@ -65,8 +65,9 @@ bash terraform/organization/scripts/tf.sh output url
 
 Después:
 
-1. Abrí `url`. El admin entra con la contraseña temporal que le mandó Cognito; cualquiera puede
-   crear una cuenta de institución o de publicador desde «Ingresar».
+1. Abrí `url`. El admin entra con la contraseña temporal que le mandó Cognito. Cualquiera puede
+   crear una cuenta: desde «Registrate como institución / publicador» queda con ese tipo, y desde
+   «Ingresar → Sign up» lo elige la primera vez que entra.
 2. Con `datos_demo = true`, esperá la preparación y evaluación automáticas de los cinco modelos
    iniciales. La web informa el estado y actualiza el catálogo; no hay que pulsar «Publicar».
    El evaluador arranca solo (de 0 a 1 tarea) cuando el procesador encola la evaluación.
@@ -85,7 +86,7 @@ este, con el sitio en S3 (cambia también la decisión 11).
 | # | Qué pasa | Dónde |
 |---|----------|-------|
 | 1 | El usuario abre el sitio en S3, por HTTP | `s3.tf` (bucket web como sitio estático) |
-| 2 | «Ingresar» (o «crear cuenta») redirige al Hosted UI de Cognito con un `state` al azar | `frontend/src/api/sesion.ts` |
+| 2 | «Ingresar» (o «crear cuenta») redirige al Hosted UI de Cognito por el cliente de esa puerta, con un `state` al azar que empieza con el nombre del cliente | `frontend/src/api/sesion.ts` |
 | 3 | Cognito vuelve a `GET /callback` de API Gateway, que es HTTPS | `cognito.tf` (`callback_urls`), `api.tf` |
 | 4 | La Lambda canjea el código por los tokens (con el secreto del cliente) y redirige a `http://<sitio>/#access_token=…&id_token=…` | `lambda/callback.py` |
 | 5 | El sitio lee los tokens del fragmento, comprueba el `state`, los guarda en `localStorage` y limpia la URL | `sesion.ts` → `recibirDelCallback()` |
@@ -93,11 +94,34 @@ este, con el sitio en S3 (cambia también la decisión 11).
 
 - **Por qué el callback no va directo al sitio.** Cognito solo acepta callbacks HTTPS (salvo
   `localhost`), y el sitio de S3 es HTTP: sin CloudFront ni dominio propio no hay certificado.
-- **Registro.** Hay un cliente de Cognito por tipo de cuenta (institución, publicador). El sitio
-  pone el tipo al principio del `state` para que la Lambda sepa con qué secreto canjear, y la
-  Lambda de post-confirmación ve por qué cliente se registró el usuario y lo pone en su grupo
-  (`admin_institucion` o `publicador`). Médicos e integrantes llegan por invitación
-  (`aws cognito-idp admin-create-user`); los admins, con `email_admin`.
+- **Registro: tres clientes, uno por puerta.** «Registrate como institución» y «… como
+  publicador» abren el alta de su propio cliente, y la Lambda de post-confirmación ve por cuál se
+  confirmó la cuenta y la pone en su grupo (`admin_institucion` o `publicador`). «Ingresar» tiene
+  un tercero, `ateneo-ingreso`, que no da grupo. Hace falta porque el autorregistro es de todo el
+  user pool, no de un cliente, y el Hosted UI muestra el link «Sign up» en cualquiera: antes,
+  quien se registraba desde «Ingresar» quedaba en el grupo del cliente de publicador, y un médico
+  terminaba sin poder analizar estudios. No hay grupo por defecto: un cliente que la Lambda no
+  conoce no da ninguno. El sitio pone el cliente al principio del `state` para que la Lambda del
+  callback sepa con qué secreto canjear; si no nombra uno conocido, no canjea. Médicos e
+  integrantes llegan por invitación (`aws cognito-idp admin-create-user`); los admins, con
+  `email_admin`.
+- **El tipo de cuenta se elige en la app, una sola vez.** Con sesión y sin grupos, el sitio
+  pregunta «¿Tu cuenta es de una institución o de un publicador?» en cualquier ruta, y la
+  respuesta va a `POST /api/cuenta/tipo`, que pide token pero no rol. El backend no decide con los
+  grupos del token, que se emitió antes de elegir: lee los de Cognito (`AdminListGroupsForUser`),
+  fija la elección en la tabla `cuenta` con el `sub` como clave (`insert … on conflict do nothing`
+  y releer: de dos pedidos a la vez gana uno) y recién después agrega el grupo
+  (`AdminAddUserToGroup`). Una elección distinta de la guardada, o un grupo distinto en Cognito,
+  es `409`. Las tareas de la api llaman a Cognito como `LabRole`, por el NAT. Después el sitio
+  vuelve a pasar por el login: la sesión de Cognito dura una hora, así que no pide la contraseña,
+  y el token nuevo trae el grupo. Antes de preguntar, el sitio consulta `GET /api/cuenta/tipo`: si
+  la cuenta ya eligió (en otro navegador, o el token es de antes de elegir), trae un token nuevo
+  en vez de volver a preguntar.
+- **Por qué no se elige en el formulario de Cognito.** Un atributo propio no puede ser
+  obligatorio, el Hosted UI lo muestra como texto libre y no se completa por URL, y el Hosted UI
+  no les pasa `clientMetadata` a los disparadores. Un formulario de alta propio haría tipear la
+  contraseña en el sitio, que se sirve por HTTP desde S3 (no hay CloudFront en el lab); el Hosted
+  UI la mantiene en HTTPS.
 - **Qué guarda el navegador.** Access e id token, una hora. Sin refresh token en la URL: al
   vencer, «Ingresar» vuelve a pasar por Cognito, que recuerda la sesión y no pide la contraseña.
 
@@ -143,7 +167,8 @@ este código. Cuando llegue la devolución se agrega acá lo que falte.
 | Cuota de vCPU de Fargate (todo escalado son 8,5 vCPU) | Bajar tamaños y máximos en `ecs.tf` |
 | Container Insights en el cluster (publica `RunningTaskCount`, el divisor del backlog por tarea) | `container_insights = false`: worker y procesador escalan por escalones sobre los mensajes visibles |
 | WAF asociado a un ALB | `waf_activo = false` |
-| Disparador Lambda de Cognito | El backend asigna el grupo en la primera llamada |
+| Disparador Lambda de Cognito | Registrarse desde «Ingresar» y elegir el tipo en la app, que no depende de la Lambda |
+| Llamadas admin a Cognito desde las tareas de la api con `LabRole` (`AdminListGroupsForUser`, `AdminAddUserToGroup`), para elegir el tipo | Registrarse por «Registrate como institución / publicador», que da el grupo con la Lambda |
 | Push a ECR desde EC2 con `LabInstanceProfile` | Construir con Docker en la máquina de quien corre Terraform |
 | Bucket web público (bloqueo de acceso público a nivel de cuenta) | Servir el sitio desde la api, detrás de API Gateway |
 

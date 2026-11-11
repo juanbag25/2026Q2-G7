@@ -80,8 +80,9 @@ class Consulta:
                 )
         return Consulta(id=uuid4(), estudio_id=estudio.id, creada=ahora)
 
-    def trabajos_para(self, estudio: Estudio, modelos: Sequence[Modelo], ahora: datetime) -> list[Trabajo]:
-        return [Trabajo.nuevo(estudio, m, ahora, consulta_id=self.id) for m in modelos]
+    def trabajos_para(self, estudio: Estudio, modelos: Sequence[Modelo], ahora: datetime,
+                      creado_por: str) -> list[Trabajo]:
+        return [Trabajo.nuevo(estudio, m, ahora, creado_por=creado_por, consulta_id=self.id) for m in modelos]
 
     def informe(self, trabajos: Sequence[Trabajo], modelos: Mapping[UUID, Modelo]) -> InformeConsulta:
         """El consenso sale cuando terminaron todas y al menos dos anduvieron (spec §4.4): mientras

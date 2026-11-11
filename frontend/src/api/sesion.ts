@@ -1,8 +1,8 @@
 // La sesión de Cognito del lado del navegador: los pasos 2, 5 y 6 del login.
 //
 //   2. ingresar() (o crearCuenta()) manda al Hosted UI con un `state` al azar,
-//      que empieza con el tipo de cuenta: la Lambda lo usa para saber con qué
-//      cliente de Cognito canjear el código.
+//      que empieza con el cliente (ingreso, institucion o publicador): la Lambda
+//      lo usa para saber con qué cliente de Cognito canjear el código.
 //   3-4. Cognito vuelve a GET /callback de API Gateway; la Lambda canjea el
 //        código y redirige acá con los tokens en el fragmento (#access_token=…).
 //   5. recibirDelCallback() los lee, comprueba el `state`, los guarda en
@@ -11,10 +11,11 @@
 //
 // Sin refresh token: cuando el access token vence (una hora), la sesión se
 // cierra y el botón «Ingresar» vuelve a pasar por Cognito, que todavía recuerda
-// al usuario y no pide la contraseña.
+// al usuario y no pide la contraseña. Lo mismo después de elegir el tipo de
+// cuenta: el token que hay es de antes, y otra vuelta trae uno con el grupo.
 
-import { configuracion } from "./configuracion";
-import type { TipoCuenta } from "./configuracion";
+import { clienteDeIngreso, configuracion } from "./configuracion";
+import type { ClienteCognito, TipoCuenta } from "./configuracion";
 
 export interface Sesion {
   accessToken: string;
@@ -29,9 +30,26 @@ export interface Sesion {
 const CLAVE_SESION = "ateneo:sesion";
 const CLAVE_ESTADO = "ateneo:login-estado"; // sessionStorage: solo esta pestaña
 const CLAVE_VOLVER = "ateneo:login-volver";
+const CLAVE_AVISO = "ateneo:login-aviso"; // un aviso que sobrevive a la vuelta por Cognito
+const CLAVE_REFRESCO = "ateneo:login-refresco"; // esta vuelta la pidió el sitio, por un token nuevo
 
 const oyentes = new Set<() => void>();
 let sesion: Sesion | null = leerGuardada();
+
+/** Vuelve a leer la sesión guardada, sin escribirla: la cambió otra pestaña. */
+function releer(): void {
+  sesion = leerGuardada();
+  for (const oyente of oyentes) oyente();
+}
+
+// Otra pestaña ingresó, eligió el tipo de cuenta o salió: esta toma la misma sesión sin recargar.
+window.addEventListener("storage", (e) => {
+  if (e.key === CLAVE_SESION || e.key === null) releer();
+});
+// «Atrás» puede devolver la página tal como estaba en memoria, con la sesión de antes del login.
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) releer();
+});
 
 function leerGuardada(): Sesion | null {
   try {
@@ -84,11 +102,15 @@ function alAzar(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Paso 2: al Hosted UI de Cognito. Vuelve a la ruta actual después de ingresar. */
-function alHostedUI(pagina: "oauth2/authorize" | "signup", tipo: TipoCuenta): void {
+/**
+ * Paso 2: al Hosted UI de Cognito, por la puerta `cliente`. Vuelve a la ruta actual después de
+ * ingresar. El state empieza con el mismo cliente con el que se pide el código.
+ */
+function alHostedUI(pagina: "oauth2/authorize" | "signup", cliente: ClienteCognito): void {
   const cognito = configuracion().cognito;
-  if (!cognito) return;
-  const estado = `${tipo}.${alAzar()}`;
+  const clienteId = cognito?.clientes[cliente];
+  if (!cognito || !clienteId) return;
+  const estado = `${cliente}.${alAzar()}`;
   try {
     window.sessionStorage.setItem(CLAVE_ESTADO, estado);
     window.sessionStorage.setItem(CLAVE_VOLVER, window.location.pathname);
@@ -98,7 +120,7 @@ function alHostedUI(pagina: "oauth2/authorize" | "signup", tipo: TipoCuenta): vo
   const url = new URL(`${cognito.dominio}/${pagina}`);
   url.search = new URLSearchParams({
     response_type: "code",
-    client_id: cognito.clientes[tipo],
+    client_id: clienteId,
     redirect_uri: cognito.callback,
     scope: "openid email profile",
     state: estado,
@@ -106,12 +128,53 @@ function alHostedUI(pagina: "oauth2/authorize" | "signup", tipo: TipoCuenta): vo
   window.location.assign(url.toString());
 }
 
-/** Cualquier cuenta entra por cualquiera de los clientes: el grupo ya quedó fijado al registrarse. */
+/**
+ * Cualquier cuenta entra por cualquiera de los clientes. «Ingresar» usa el suyo porque Cognito
+ * muestra ahí el link «Sign up»: quien se registra desde ese link queda sin grupo y elige el tipo
+ * dentro de la app (components/ElegirTipoCuenta.tsx), en vez de quedar en el de otro cliente.
+ */
 export function ingresar(): void {
-  alHostedUI("oauth2/authorize", "publicador");
+  const cognito = configuracion().cognito;
+  if (cognito) alHostedUI("oauth2/authorize", clienteDeIngreso(cognito));
 }
 
-/** El registro de una institución o de un publicador (sección 3.4 de la arquitectura). */
+/**
+ * Otra vuelta por el login para traer un token nuevo, sin pedir la contraseña: la sesión de
+ * Cognito dura una hora. `aviso` se muestra al volver.
+ */
+export function ingresarDeNuevo(aviso?: string): void {
+  try {
+    window.sessionStorage.setItem(CLAVE_REFRESCO, "1");
+    if (aviso) window.sessionStorage.setItem(CLAVE_AVISO, aviso);
+  } catch {
+    // Sin sessionStorage el aviso se pierde; el ingreso igual trae el grupo que haya.
+  }
+  ingresar();
+}
+
+/** Lo que dejó ingresarDeNuevo() para la vuelta. */
+export interface Vuelta {
+  /** Esta carga es la vuelta de un ingreso que pidió el sitio para traer un token nuevo. */
+  refresco: boolean;
+  aviso: string | null;
+}
+
+/** Se llama una vez, al arrancar: lo que dejó ingresarDeNuevo(), y lo borra. */
+export function tomarVuelta(): Vuelta {
+  try {
+    const vuelta = {
+      refresco: window.sessionStorage.getItem(CLAVE_REFRESCO) !== null,
+      aviso: window.sessionStorage.getItem(CLAVE_AVISO),
+    };
+    window.sessionStorage.removeItem(CLAVE_REFRESCO);
+    window.sessionStorage.removeItem(CLAVE_AVISO);
+    return vuelta;
+  } catch {
+    return { refresco: false, aviso: null };
+  }
+}
+
+/** El registro de una institución o de un publicador: cada uno por su cliente, que da el grupo. */
 export function crearCuenta(tipo: TipoCuenta): void {
   alHostedUI("signup", tipo);
 }
@@ -122,7 +185,10 @@ export function salir(): void {
   const cognito = configuracion().cognito;
   if (!cognito) return;
   const url = new URL(`${cognito.dominio}/logout`);
-  url.search = new URLSearchParams({ client_id: cognito.clientes.publicador, logout_uri: cognito.logout }).toString();
+  url.search = new URLSearchParams({
+    client_id: cognito.clientes[clienteDeIngreso(cognito)] ?? cognito.clientes.publicador,
+    logout_uri: cognito.logout,
+  }).toString();
   window.location.assign(url.toString());
 }
 

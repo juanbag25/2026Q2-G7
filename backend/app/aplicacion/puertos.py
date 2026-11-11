@@ -105,6 +105,11 @@ class RepositorioConsultas(Protocol):
     def trabajos_de(self, id: UUID) -> list[Trabajo]: ...
 
 
+class RepositorioCuentas(Protocol):
+    """El tipo que eligió cada cuenta, con el `sub` como clave: se fija una sola vez."""
+    def fijar_tipo(self, sub: str, tipo: str, ahora: datetime) -> str: ...   # el que quedó: el primero que llegó
+
+
 class TrabajosSinEnviar(Protocol):
     """La usa solo el reenviador del procesador."""
     def tomar_para_reenviar(self, minutos: int, limite: int) -> list[Trabajo]: ...  # pendientes viejos; toca `actualizado`
@@ -163,3 +168,10 @@ class Reloj(Protocol):
 
 class VerificadorTokens(Protocol):
     def verificar(self, token: str) -> Usuario: ...     # NoAutenticado | ServicioNoDisponible
+
+
+class DirectorioCuentas(Protocol):
+    """Los grupos de cada cuenta en el user pool, como están ahora: los del token son de cuando se
+    emitió. `username` es el claim del access token (Usuario.username), no el `sub`."""
+    def grupos_de(self, username: str) -> tuple[str, ...]: ...          # NoAutenticado | ServicioNoDisponible
+    def agregar_a_grupo(self, username: str, grupo: str) -> None: ...   # idem; si ya estaba, no falla

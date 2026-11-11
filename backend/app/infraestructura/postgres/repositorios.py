@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -25,7 +26,7 @@ def _float(v: Any) -> float | None:
 
 COLUMNAS_MODELO = """id, nombre, version, tipo_estudio, tarea, etiquetas, s3_prefix, contrato,
     estado_evaluacion, accuracy, metricas, conjunto, conjunto_version, manifiesto,
-    evaluador_id, evaluado_en, error, creado, publicado"""
+    evaluador_id, evaluado_en, error, creado, publicado, publicado_por"""
 
 
 def _fila_a_modelo(f: dict[str, Any]) -> Modelo:
@@ -35,7 +36,7 @@ def _fila_a_modelo(f: dict[str, Any]) -> Modelo:
         estado_evaluacion=f["estado_evaluacion"], accuracy=_float(f["accuracy"]), metricas=f["metricas"],
         conjunto=f["conjunto"], conjunto_version=f["conjunto_version"], manifiesto=f["manifiesto"],
         evaluador_id=f["evaluador_id"], evaluado_en=f["evaluado_en"], error=f["error"],
-        creado=f["creado"], publicado=f["publicado"],
+        creado=f["creado"], publicado=f["publicado"], publicado_por=f["publicado_por"],
     )
 
 
@@ -51,8 +52,8 @@ class RepositorioModelosPostgres:
                 values (%(id)s, %(nombre)s, %(version)s, %(tipo_estudio)s, %(tarea)s, %(etiquetas)s,
                         %(s3_prefix)s, %(contrato)s, %(estado_evaluacion)s, %(accuracy)s, %(metricas)s,
                         %(conjunto)s, %(conjunto_version)s, %(manifiesto)s, %(evaluador_id)s,
-                        %(evaluado_en)s, %(error)s, %(creado)s, %(publicado)s)
-                on conflict (id) do update set
+                        %(evaluado_en)s, %(error)s, %(creado)s, %(publicado)s, %(publicado_por)s)
+                on conflict (id) do update set          -- publicado_por no se pisa: es de quien lo publicó primero
                     actualizado = now(),
                     tipo_estudio = excluded.tipo_estudio, tarea = excluded.tarea,
                     etiquetas = excluded.etiquetas, contrato = excluded.contrato,
@@ -70,7 +71,7 @@ class RepositorioModelosPostgres:
                     "conjunto": m.conjunto, "conjunto_version": m.conjunto_version,
                     "manifiesto": Jsonb(m.manifiesto) if m.manifiesto is not None else None,
                     "evaluador_id": m.evaluador_id, "evaluado_en": m.evaluado_en, "error": m.error,
-                    "creado": m.creado, "publicado": m.publicado,
+                    "creado": m.creado, "publicado": m.publicado, "publicado_por": m.publicado_por,
                 },
             )
 
@@ -108,13 +109,13 @@ class RepositorioModelosPostgres:
 
 # ---- estudio ------------------------------------------------------------------------
 
-COLUMNAS_ESTUDIO = "id, tipo_estudio, s3_key, content_type, tamano_bytes, estado, creado"
+COLUMNAS_ESTUDIO = "id, tipo_estudio, s3_key, content_type, tamano_bytes, estado, creado, creado_por"
 
 
 def _fila_a_estudio(f: dict[str, Any]) -> Estudio:
     return Estudio(id=f["id"], tipo_estudio=f["tipo_estudio"], s3_key=f["s3_key"],
                    content_type=f["content_type"], tamano_bytes=f["tamano_bytes"],
-                   estado=f["estado"], creado=f["creado"])
+                   estado=f["estado"], creado=f["creado"], creado_por=f["creado_por"])
 
 
 class RepositorioEstudiosPostgres:
@@ -126,11 +127,12 @@ class RepositorioEstudiosPostgres:
             conn.execute(
                 f"""
                 insert into estudio ({COLUMNAS_ESTUDIO})
-                values (%(id)s, %(tipo_estudio)s, %(s3_key)s, %(content_type)s, %(tamano_bytes)s, %(estado)s, %(creado)s)
+                values (%(id)s, %(tipo_estudio)s, %(s3_key)s, %(content_type)s, %(tamano_bytes)s, %(estado)s, %(creado)s,
+                        %(creado_por)s)
                 on conflict (id) do update set tamano_bytes = excluded.tamano_bytes, estado = excluded.estado
                 """,
                 {"id": e.id, "tipo_estudio": e.tipo_estudio, "s3_key": e.s3_key, "content_type": e.content_type,
-                 "tamano_bytes": e.tamano_bytes, "estado": e.estado, "creado": e.creado},
+                 "tamano_bytes": e.tamano_bytes, "estado": e.estado, "creado": e.creado, "creado_por": e.creado_por},
             )
 
     def obtener(self, id: UUID) -> Estudio:
@@ -144,14 +146,14 @@ class RepositorioEstudiosPostgres:
 # ---- trabajo ------------------------------------------------------------------------
 
 COLUMNAS_TRABAJO = ("id, estudio_id, modelo_id, estado, intentos, worker_id, resultado, duracion_ms, error, "
-                    "creado, actualizado, consulta_id")
+                    "creado, actualizado, creado_por, consulta_id")
 
 
 def _fila_a_trabajo(f: dict[str, Any]) -> Trabajo:
     return Trabajo(id=f["id"], estudio_id=f["estudio_id"], modelo_id=f["modelo_id"], estado=f["estado"],
                    intentos=f["intentos"], worker_id=f["worker_id"], resultado=f["resultado"],
                    duracion_ms=f["duracion_ms"], error=f["error"], creado=f["creado"], actualizado=f["actualizado"],
-                   consulta_id=f["consulta_id"])
+                   creado_por=f["creado_por"], consulta_id=f["consulta_id"])
 
 
 def _guardar_trabajo(conn: Connection, t: Trabajo) -> None:
@@ -159,7 +161,8 @@ def _guardar_trabajo(conn: Connection, t: Trabajo) -> None:
         f"""
         insert into trabajo ({COLUMNAS_TRABAJO})
         values (%(id)s, %(estudio_id)s, %(modelo_id)s, %(estado)s, %(intentos)s, %(worker_id)s,
-                %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s, %(consulta_id)s)
+                %(resultado)s, %(duracion_ms)s, %(error)s, %(creado)s, %(actualizado)s, %(creado_por)s,
+                %(consulta_id)s)
         on conflict (id) do update set
             estado = excluded.estado, intentos = excluded.intentos, worker_id = excluded.worker_id,
             resultado = excluded.resultado, duracion_ms = excluded.duracion_ms,
@@ -169,7 +172,7 @@ def _guardar_trabajo(conn: Connection, t: Trabajo) -> None:
          "intentos": t.intentos, "worker_id": t.worker_id,
          "resultado": Jsonb(t.resultado) if t.resultado is not None else None,
          "duracion_ms": t.duracion_ms, "error": t.error, "creado": t.creado, "actualizado": t.actualizado,
-         "consulta_id": t.consulta_id},
+         "creado_por": t.creado_por, "consulta_id": t.consulta_id},
     )
 
 
@@ -248,6 +251,23 @@ class RepositorioConsultasPostgres:
                 f"select {COLUMNAS_TRABAJO} from trabajo where consulta_id = %s order by creado, id", (id,)
             ).fetchall()
         return [_fila_a_trabajo(f) for f in filas]
+
+
+# ---- cuenta (el tipo elegido) -------------------------------------------------------
+
+class RepositorioCuentasPostgres:
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def fijar_tipo(self, sub: str, tipo: str, ahora: datetime) -> str:
+        """El primero que llega fija el tipo; los demás leen ese. Son dos sentencias y no una: en
+        read committed, la segunda ve la fila que otro pedido confirmó mientras el insert esperaba
+        su turno sobre la clave."""
+        with self._pool.connection() as conn:
+            conn.execute("insert into cuenta (sub, tipo, elegida) values (%s, %s, %s) on conflict (sub) do nothing",
+                         (sub, tipo, ahora))
+            fila = conn.execute("select tipo from cuenta where sub = %s", (sub,)).fetchone()
+        return fila["tipo"]
 
 
 # ---- resultados (procesador) --------------------------------------------------------

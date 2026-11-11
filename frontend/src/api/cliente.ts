@@ -67,6 +67,14 @@ async function pedir<T>(ruta: string, init: RequestInit = {}): Promise<T> {
     descartarSesion();
     throw new ErrorApi(401, "no_autenticado", "Tu sesión venció. Ingresá de nuevo para seguir.");
   }
+  if (respuesta.status === 403) {
+    // La cuenta no tiene el rol de esta acción. No es la sesión: no se descarta. El backend ya
+    // dice qué cuenta hace falta y cuál es la tuya; un 403 sin ese cuerpo (el WAF) lleva uno propio.
+    const error = await leerError(respuesta);
+    throw error.error === "sin_permiso"
+      ? error
+      : new ErrorApi(403, "prohibido", "La API rechazó el pedido (403). Si sigue pasando, avisale a la administración de Ateneo.");
+  }
   if (!respuesta.ok) throw await leerError(respuesta);
   // 204 sin cuerpo: devolvemos undefined tipado como T.
   if (respuesta.status === 204) return undefined as unknown as T;

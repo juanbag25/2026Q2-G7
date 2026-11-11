@@ -79,7 +79,7 @@ resource "aws_apigatewayv2_integration" "alb" {
 }
 
 # Firma, emisor, vencimiento y cliente. Un access token de Cognito no trae aud: API Gateway
-# compara la audiencia contra su client_id. Vale cualquiera de los dos clientes.
+# compara la audiencia contra su client_id. Vale cualquiera de los tres clientes.
 resource "aws_apigatewayv2_authorizer" "cognito" {
   api_id           = aws_apigatewayv2_api.ateneo.id
   name             = "cognito"
@@ -141,9 +141,9 @@ resource "aws_lambda_function" "callback" {
   environment {
     variables = {
       COGNITO_DOMINIO = local.cognito_dominio
-      # tipo de cuenta => cliente: el sitio pone el tipo al principio del state
+      # ingreso, institucion o publicador => cliente: el sitio pone el suyo al principio del state
       CLIENTES = jsonencode({
-        for tipo, c in aws_cognito_user_pool_client.web : tipo => { id = c.id, secreto = c.client_secret }
+        for cliente, c in aws_cognito_user_pool_client.web : cliente => { id = c.id, secreto = c.client_secret }
       })
       URL_CALLBACK = local.url_callback # tiene que ser idéntica a la del pedido de /authorize
       URL_SITIO    = local.url_sitio

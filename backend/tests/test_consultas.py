@@ -13,8 +13,8 @@ from app.dominio.errores import Conflicto, EntradaInvalida, NoEncontrado
 from app.dominio.modelo import Modelo
 
 from .fakes import (
-    AlmacenMemoria, ColaFalsa, RelojFijo, RepoConsultasMemoria, RepoEstudiosMemoria, RepoModelosMemoria,
-    RepoTrabajosMemoria,
+    ADMIN, MEDICO_A, MEDICO_B, AlmacenMemoria, ColaFalsa, RelojFijo, RepoConsultasMemoria, RepoEstudiosMemoria,
+    RepoModelosMemoria, RepoTrabajosMemoria,
 )
 
 TORAX = ["NORMAL", "PNEUMONIA"]
@@ -30,6 +30,7 @@ def mundo():
         consultas = RepoConsultasMemoria(trabajos)
         almacen = AlmacenMemoria()
         cola = ColaFalsa()
+        usuario = MEDICO_A                                   # quien sube los estudios y pide las juntas
 
         def modelo(self, nombre, auc=0.95, tipo="torax-rx", etiquetas=TORAX, estado="ok"):
             t = self.reloj.ahora()
@@ -43,17 +44,18 @@ def mundo():
 
         def estudio(self, tipo="torax-rx", subido=True):
             c = CrearEstudio(self.estudios, self.almacen, self.reloj, 20_000_000, "estudios/").ejecutar(
-                tipo, "image/png", 1234)
+                self.usuario, tipo, "image/png", 1234)
             if subido:
                 self.almacen.objetos[c.estudio.s3_key] = 1234
             return c.estudio
 
-        def crear(self, estudio, modelos):
+        def crear(self, estudio, modelos, usuario=None):
             return CrearConsulta(self.estudios, self.modelos, self.consultas, self.almacen, self.reloj, self.cola,
-                                 "b-modelos", "b-estudios").ejecutar(estudio.id, [m.id for m in modelos])
+                                 "b-modelos", "b-estudios").ejecutar(usuario or self.usuario, estudio.id,
+                                                                     [m.id for m in modelos])
 
-        def leer(self, consulta_id):
-            return ConsultarConsulta(self.consultas, self.modelos).ejecutar(consulta_id)
+        def leer(self, consulta_id, usuario=None):
+            return ConsultarConsulta(self.consultas, self.modelos).ejecutar(usuario or self.usuario, consulta_id)
 
         def resultado(self, informe, modelo, p_neumonia=None, error=None):
             """Lo que haría el procesador al llegar el resultado de ese modelo."""
@@ -242,3 +244,26 @@ def test_un_modelo_que_se_esta_reevaluando_no_vota(mundo):
 def test_consulta_inexistente_es_404(mundo):
     with pytest.raises(NoEncontrado):
         mundo.leer(uuid4())
+
+
+# ---- de quién es la junta (permisos por rol y autoría) ---------------------------------
+
+def test_los_trabajos_de_la_junta_son_de_quien_la_pidio(mundo):
+    informe = mundo.crear(mundo.estudio(), tres(mundo))
+    assert {t.creado_por for t in mundo.consultas.trabajos_de(informe.consulta.id)} == {MEDICO_A.sub}
+
+
+def test_sobre_un_estudio_ajeno_no_se_arma_nada(mundo):
+    modelos = tres(mundo)
+    e = mundo.estudio()                                      # es de MEDICO_A
+    with pytest.raises(NoEncontrado):
+        mundo.crear(e, modelos, usuario=MEDICO_B)
+    assert mundo.consultas.datos == {} and mundo.trabajos.datos == {} and mundo.cola.enviados == []
+    assert mundo.estudios.obtener(e.id).estado != "subido"   # ni se confirmó la subida
+
+
+def test_la_junta_ajena_es_404_y_el_admin_la_ve(mundo):
+    informe = mundo.crear(mundo.estudio(), tres(mundo))
+    with pytest.raises(NoEncontrado):
+        mundo.leer(informe.consulta.id, usuario=MEDICO_B)
+    assert mundo.leer(informe.consulta.id, usuario=ADMIN).consulta.id == informe.consulta.id
