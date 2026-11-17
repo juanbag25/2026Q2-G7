@@ -1,177 +1,356 @@
 # Ateneo
 
-Marketplace de modelos de IA clínica · Cloud Computing 82.08 · ITBA.
+**Marketplace de modelos de inteligencia artificial para imágenes médicas.** Proyecto de
+Cloud Computing 82.08 · ITBA.
 
-Una portada que cuenta qué ofrece Ateneo, el catálogo de modelos y dos caminos.
-**Publicar un modelo** (el ONNX va del navegador directo al bucket con una URL prefirmada, la API
-valida su contrato y el evaluador, en una subred aislada, lo mide contra el conjunto reservado) y
-**consultar un estudio** desde la ficha de un modelo (la API encola el pedido en SQS, un worker lo
-toma y el procesador escribe el resultado).
+Ateneo permite publicar modelos, comparar su rendimiento y usarlos para analizar estudios.
+La plataforma evalúa cada modelo contra un conjunto de imágenes reservado y muestra las
+métricas obtenidas en el catálogo. También permite consultar varios modelos sobre una misma
+imagen y obtener un informe de consenso.
 
-Esta versión implementa la arquitectura de «Ateneo en AWS 2.0»: ECS Fargate, API Gateway
-con HTTPS, un WAF con un tope de pedidos por cliente, Cognito, tres colas de SQS y un despliegue
-completo con `terraform apply`.
+El proyecto implementa una demostración académica de estos flujos: utiliza modelos
+preentrenados en formato ONNX y conjuntos públicos de prueba. **Ateneo evalúa y ejecuta
+modelos; no los entrena.**
 
-- [specs.md](specs.md) · qué hace: flujos, API, contrato del modelo, esquema, criterios de aceptación.
-- [architecture.md](architecture.md) · cómo está construido: servicios, puertos y adaptadores, colas.
-- [terraform/README.md](terraform/README.md) · la infraestructura, el login con Cognito y cómo desplegar.
-- [arquitectura-aws.drawio](arquitectura-aws.drawio) · el diagrama de la infraestructura en AWS, con los íconos oficiales (se abre con draw.io).
-- [models_specs.md](models_specs.md) · los cinco modelos de la demo, sus contratos y sus conjuntos reservados.
+## Índice
 
-## Estructura
+- [Funcionalidades](#funcionalidades)
+- [Inicio rápido en local](#inicio-rápido-en-local)
+- [Probar la aplicación](#probar-la-aplicación)
+- [Cómo funciona](#cómo-funciona)
+- [Estructura del repositorio](#estructura-del-repositorio)
+- [Desarrollo y pruebas](#desarrollo-y-pruebas)
+- [Despliegue en AWS](#despliegue-en-aws)
+- [Solución de problemas](#solución-de-problemas)
+- [Documentación técnica](#documentación-técnica)
 
-```
-ateneo_ml/    preprocesamiento + motor ONNX + métricas, compartido por worker y evaluador
-backend/      imagen backend: la api (FastAPI) y el procesador (escribe los resultados)
-worker/       imagen ml: lee la cola inferencias, sin base y sin puertos
-evaluador/    imagen ml: lee la cola evaluaciones, en la subred aislada
-frontend/     React + Vite + TypeScript (portada, catálogo, ficha de cada modelo, publicar), con login de Cognito
-migraciones/  SQL; las aplica el procesador al arrancar
-models/       los cinco modelos de la demo y sus conjuntos (catalogo.json, conjuntos.json)
-tools/        preparar la demo, bajar y verificar modelos, preparar y subir conjuntos, empaquetar el código
-terraform/    toda la infraestructura como código
-docker/       Dockerfiles de las dos imágenes, de los tests y la configuración de ElasticMQ
-```
+## Funcionalidades
 
-## Correr en local (Docker)
+- **Catálogo:** consultar los modelos disponibles, sus versiones y sus métricas verificadas.
+- **Análisis individual:** subir una imagen y obtener la predicción de un modelo elegido.
+- **Junta de modelos:** seleccionar entre 2 y 5 modelos evaluados del mismo tipo de estudio
+  y analizar una imagen con todos ellos. El consenso pondera las probabilidades según las
+  métricas verificadas y marca revisión prioritaria cuando el acuerdo es menor al 70 %.
+- **Publicación:** subir un archivo `.onnx` y su contrato `modelo.json`, que describe la
+  entrada, el preprocesamiento y la salida del modelo, para evaluarlo y sumarlo al catálogo.
+- **Acceso por roles en AWS:** catálogo público; publicación para publicadores; análisis
+  para médicos e instituciones; acceso a ambas funciones para administradores de la plataforma.
+  En local, la demo funciona sin iniciar sesión.
 
-Reproduce la topología de AWS: Postgres hace de RDS, MinIO de S3 y ElasticMQ de SQS (las mismas
-tres colas, con sus colas de fallidos), y cada servicio corre en su contenedor. En local no hay
-login: la api sirve el sitio en `/` y todos son anónimos.
+## Inicio rápido en local
 
-```bash
-docker compose up -d --build            # db, minio, sqs, demo-init, migraciones, api, procesador, worker, evaluador
-```
+### Requisitos
 
-**El sitio se compila adentro de la imagen del backend** (`docker/Dockerfile.backend` tiene una
-etapa de node), así que después de tocar `frontend/` o `backend/` hay que reconstruir:
-`docker compose up -d --build api procesador`.
+- Git, si todavía no clonaste el repositorio.
+- Docker con Docker Compose v2 (`docker compose`) y el motor de Docker en ejecución.
+- Conexión a internet para construir las imágenes y descargar los modelos y datos iniciales.
+- Puertos locales libres: `8080`, `5432`, `9000`, `9001` y `9324`.
 
-Abrí <http://localhost:8080>. La primera vez se descargan y verifican los cinco modelos
-preentrenados del [registro](models/catalogo.json), todos v1.0.0, de dos tipos de estudio:
+**No necesitás instalar Python, Node.js ni configurar credenciales de AWS para ejecutar la demo
+con Docker.** La configuración local ya está definida en [docker-compose.yml](docker-compose.yml).
 
-- Rx de tórax, NORMAL / PNEUMONIA (`torax-rx`):
-  - **Mediscan · Neumonía** (`torax-rx-neumonia`).
-  - **DenseNet121 · Neumonía** (`torax-rx-densenet121`).
-  - **EfficientNet-B0 · Neumonía** (`torax-rx-efficientnet-b0`).
-- RM de cerebro, glioma / meningioma / notumor / pituitary (`cerebro-rm`):
-  - **EfficientNetB3 · Tumor cerebral** (`cerebro-rm-efficientnetb3`).
-  - **CNN · Tumor cerebral** (`cerebro-rm-cnn`).
+### 1. Levantar los servicios
 
-Cada tipo de estudio tiene su conjunto reservado de 200 casos, definido en
-[`models/conjuntos.json`](models/conjuntos.json): se prepara una sola vez y todos los modelos
-de ese tipo se publican y evalúan por separado contra él. **No necesitás subir ni publicar un modelo.**
-Cada modelo aparece en el catálogo apenas se publica, con «Esperando la evaluación», y la web
-se actualiza sola; podés usar los que ya terminaron mientras se preparan los otros. La primera preparación requiere internet y tarda varios minutos.
-`up -d` no espera la evaluación.
+Desde la raíz del repositorio:
 
 ```bash
-# Esperar los cinco:
+docker compose up -d --build
+```
+
+El comando construye el sitio y los servicios, prepara la base de datos e inicia la descarga
+de los cinco modelos de demostración. **Que el comando termine no significa que los modelos
+ya estén evaluados:** la preparación inicial requiere varios minutos.
+
+### 2. Abrir la aplicación
+
+Entrá a <http://localhost:8080>. No hace falta registrarse ni publicar un modelo para empezar.
+El catálogo muestra el progreso y se actualiza automáticamente; podés usar cada modelo
+apenas termina su evaluación.
+
+Para esperar desde la terminal a que los cinco estén listos:
+
+```bash
 docker compose run --rm herramientas python tools/esperar_modelo.py --timeout 1800
-# O esperar uno en particular:
-docker compose run --rm herramientas python tools/esperar_modelo.py --nombre torax-rx-densenet121 --version 1.0.0
 ```
 
-Hay dos flujos de consulta:
+El comando termina correctamente cuando la demo está lista; informa un error si falla la
+preparación o se agota el tiempo de espera de 30 minutos. Si ocurre, consultá
+[Solución de problemas](#solución-de-problemas).
 
-- **Con un modelo:** Modelos → ficha del modelo elegido → subir una imagen del tipo de estudio →
-  resultado, que identifica nombre y versión.
-- **En junta:** Junta (en la barra, en el catálogo o en la ficha) → elegir de 2 a 5 modelos
-  evaluados del mismo tipo → subir la imagen una vez → cada modelo la analiza por separado, en
-  paralelo (un mensaje por modelo en la cola `inferencias`), y arriba el informe de consenso:
-  promedio de probabilidades ponderado por la métrica verificada de cada modelo, el acuerdo y
-  **revisión prioritaria** si el acuerdo baja del 70 %. Con los tres de `torax-rx` se ve entero.
+### 3. Verificar y detener
 
-Ateneo evalúa y ejecuta inferencias, no entrena los pesos.
+| Recurso local | Dirección | Uso |
+| --- | --- | --- |
+| Aplicación | <http://localhost:8080> | Catálogo, análisis y publicación |
+| API interactiva | <http://localhost:8080/api/docs> | Explorar y probar los endpoints |
+| Estado de la API | <http://localhost:8080/api/health> | Comprobar que la API responde |
+| Estado de la demo | <http://localhost:8080/api/publico/demo> | Ver el avance de los cinco modelos |
+| Consola de MinIO | <http://localhost:9001> | Inspeccionar archivos; usuario y contraseña: `minioadmin` |
 
-Reiniciar conserva IDs y métricas de los modelos ya evaluados. Los pesos se descargan por
-revisión inmutable y SHA-256 y persisten en S3/MinIO y caché por identidad. Se versionan
-contratos y manifiestos, no los pesos: Mediscan no declara licencia y los otros cuatro
-declaran MIT. Ver [models_specs.md](models_specs.md) y los README de cada modelo.
+Para detener los servicios:
 
-Se puede desactivar la preparación con `DATOS_DEMO=false docker compose up -d`; no borra
-modelos existentes ni impide publicar otros.
+```bash
+docker compose down
+```
 
-### Publicar otros modelos (opcional)
+Los volúmenes conservan la base de datos, los archivos y las cachés. Al volver a ejecutar
+`docker compose up -d`, se reutilizan los modelos ya evaluados con sus IDs y métricas.
+`docker compose down -v` elimina esos volúmenes y sus datos.
 
-La página `/publicar` sigue aceptando ONNX y contrato. Si querés probar la subida del mismo
-modelo en otro entorno, podés obtener los dos archivos así:
+## Probar la aplicación
+
+### Modelos incluidos
+
+La demo prepara los siguientes modelos, todos en versión `1.0.0`:
+
+| Tipo de estudio | Modelos | Clases de salida |
+| --- | --- | --- |
+| Radiografía de tórax (`torax-rx`) | Mediscan · Neumonía; DenseNet121 · Neumonía; EfficientNet-B0 · Neumonía | `NORMAL`, `PNEUMONIA` |
+| Resonancia de cerebro (`cerebro-rm`) | EfficientNetB3 · Tumor cerebral; CNN · Tumor cerebral | `glioma`, `meningioma`, `notumor`, `pituitary` |
+
+Cada tipo tiene un conjunto reservado de 200 casos. Los modelos se evalúan por separado
+contra el conjunto de su tipo; las imágenes y etiquetas de esos conjuntos no se exponen
+por la API pública.
+
+El [registro de modelos](models/catalogo.json) fija las revisiones y los hashes SHA-256 de
+los pesos. El repositorio versiona contratos y manifiestos; los pesos se descargan durante
+la preparación. Mediscan no declara licencia y los otros cuatro modelos declaran MIT.
+Los orígenes, contratos y licencias se detallan en [models_specs.md](models_specs.md).
+
+### Analizar con un modelo
+
+1. Entrá a **Modelos** y abrí la ficha de uno que haya terminado su evaluación.
+2. Subí una imagen **PNG o JPEG de hasta 20 MB**, del tipo de estudio correspondiente.
+3. Iniciá el análisis y esperá el resultado. La pantalla identifica el modelo y la versión utilizados.
+
+### Consultar una junta
+
+1. Entrá a **Junta** desde la navegación, el catálogo o la ficha de un modelo.
+2. Elegí de 2 a 5 modelos evaluados del mismo tipo de estudio.
+3. Subí una imagen e iniciá la consulta.
+4. Revisá los resultados individuales y el informe de consenso. Podés probar este flujo con
+   los tres modelos de tórax incluidos en la demo.
+
+### Publicar un modelo propio (opcional)
+
+1. Prepará el archivo `.onnx` (hasta 512 MB) y su contrato `modelo.json`.
+2. Entrá a **Publicar**, seleccioná los archivos y usá **Subir y publicar**.
+3. Seguí el estado de evaluación desde el catálogo y la ficha del modelo.
+
+La combinación de nombre y versión identifica al modelo y no se sobrescribe: para cambiar
+sus archivos, publicá una versión nueva. El contrato y el conjunto de evaluación requerido
+se describen en [specs.md](specs.md) y [models_specs.md](models_specs.md).
+
+Para obtener los archivos del modelo Mediscan de ejemplo:
 
 ```bash
 docker compose run --rm herramientas python tools/descargar_modelo.py --carpeta /salida/modelo --solo-descargar
 ```
 
-Arrastrá `tmp/modelo/modelo.onnx` y `tmp/modelo/modelo.json` y usá **Subir y publicar**.
-Una versión existente no se sobrescribe: en el entorno con demo ya estará publicada.
-Podés usar radiografías propias de prueba o preparar una carpeta local de ejemplos con
-`tools/preparar_conjunto.py` como describe su ayuda. Los casos reservados no se sirven por la API pública.
+Quedan en `tmp/modelo/modelo.onnx` y `tmp/modelo/modelo.json` de tu máquina. Esa identidad
+ya está publicada si activaste la demo; estos archivos sirven para probar la publicación
+en un entorno donde todavía no exista.
 
-### Recuperación
+Para iniciar sin cargar los datos de demostración, en Bash o Zsh:
 
 ```bash
-docker compose logs --tail=100 demo-init procesador evaluador
-# Reintentar descarga/carga tras corregir el problema (la caché se conserva):
+DATOS_DEMO=false docker compose up -d --build
+```
+
+Esto desactiva la preparación automática; conserva los modelos existentes y permite publicar otros.
+
+## Cómo funciona
+
+La aplicación procesa los análisis y las evaluaciones de forma asíncrona:
+
+```text
+Navegador → API → cola inferencias  → worker    → cola resultados → procesador → PostgreSQL
+               → cola evaluaciones → evaluador → cola resultados → procesador → PostgreSQL
+```
+
+La API recibe las solicitudes y encola los trabajos. El **worker** ejecuta las inferencias;
+el **evaluador** mide los modelos contra los conjuntos reservados. Ambos publican sus
+resultados en una cola y el **procesador** los guarda en la base. La web consulta el estado
+hasta mostrar el resultado.
+
+Los modelos y estudios se suben directamente desde el navegador al almacenamiento mediante
+URLs prefirmadas. El worker y el evaluador consumen colas, no reciben peticiones HTTP ni
+acceden a la base de datos. Ambos comparten el motor ONNX y el preprocesamiento de `ateneo_ml/`.
+
+| Componente | Entorno local | AWS |
+| --- | --- | --- |
+| Sitio web | Compilado y servido por el backend | Sitio estático en S3 |
+| API y procesos | Contenedores de Docker Compose | Cuatro servicios en ECS Fargate |
+| Base de datos | PostgreSQL 16 | RDS PostgreSQL 16 |
+| Archivos | MinIO | S3 |
+| Colas | ElasticMQ | SQS, con colas de fallidos |
+| Caché de modelos del worker | Volumen de Docker | EFS |
+| Autenticación | Sin login | Cognito y permisos por rol |
+| Acceso a la API | `localhost:8080` | API Gateway con HTTPS, ALB interno y WAF |
+
+## Estructura del repositorio
+
+| Ruta | Contenido |
+| --- | --- |
+| `frontend/` | Interfaz en React, TypeScript y Vite |
+| `backend/` | API FastAPI, lógica de aplicación, acceso a datos y procesador de resultados |
+| `worker/` | Consumidor de la cola de inferencias |
+| `evaluador/` | Consumidor de la cola de evaluaciones |
+| `ateneo_ml/` | Contratos, preprocesamiento, motor ONNX y métricas compartidos |
+| `migraciones/` | Migraciones SQL de la base de datos |
+| `models/` | Registro, contratos y manifiestos de los modelos y conjuntos iniciales |
+| `tools/` | Descarga y verificación de modelos, preparación de conjuntos y herramientas de demo |
+| `docker/` | Dockerfiles y configuración de ElasticMQ |
+| `terraform/` | Infraestructura de AWS y scripts de despliegue |
+| `tests/` y `backend/tests/` | Pruebas de la aplicación y los componentes de ML |
+| `.github/workflows/` | Validación de Terraform y operaciones de infraestructura |
+
+## Desarrollo y pruebas
+
+### Frontend con recarga automática
+
+Requiere Node.js 20 (la versión usada por la imagen de construcción) y los servicios de Docker
+levantados. Desde la raíz:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Abrí <http://localhost:5173>. Vite redirige `/api` al backend en `localhost:8080`.
+Para verificar la compilación del frontend, ejecutá `npm run build` en `frontend/`.
+
+### Aplicar cambios a los contenedores
+
+El sitio servido en el puerto `8080` está compilado dentro de la imagen del backend.
+Después de modificar `frontend/` o `backend/`, reconstruí los servicios:
+
+```bash
+docker compose up -d --build api procesador
+```
+
+Si modificás `worker/`, `evaluador/` o `ateneo_ml/`:
+
+```bash
+docker compose up -d --build worker evaluador
+```
+
+### Pruebas con Docker
+
+No requiere instalar las dependencias de Python en tu máquina:
+
+```bash
+docker compose run --rm --build tests
+```
+
+### Pruebas con Python local
+
+Usá Python 3.11, la versión de las imágenes Docker. Desde la raíz, creá el entorno:
+
+```bash
+python -m venv .venv
+```
+
+Activación en Linux/macOS (Bash o Zsh):
+
+```bash
+source .venv/bin/activate
+```
+
+Activación en Windows (PowerShell):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Con el entorno activo:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -rs
+```
+
+La suite cubre `ateneo_ml`, worker, evaluador y backend. Las pruebas de integración con
+PostgreSQL se omiten si no se define `TEST_DEMO_DATABASE_URL`, que debe apuntar a una base
+exclusiva para pruebas. Esto también aplica al contenedor de tests por defecto.
+En Windows, si falta el runtime de Visual C++, los tests que dependen de `onnx` pueden
+omitirse; usá la ejecución con Docker para disponer de esas dependencias.
+
+## Despliegue en AWS
+
+El despliegue está preparado para **AWS Academy Learner Lab**. Terraform crea la red, el
+almacenamiento, las colas, la autenticación y los servicios; también construye y publica
+las imágenes. Se puede ejecutar desde CloudShell sin instalar Docker allí.
+
+Seguí la guía de [primer despliegue](terraform/README.md#primer-despliegue): incluye la
+inicialización del estado remoto, la configuración de `email_admin` y `email_alertas`,
+el comando de despliegue y la obtención de la URL del sitio.
+
+En AWS, el catálogo es público y las acciones requieren una cuenta con el rol correspondiente.
+API Gateway y WAF aplican límites de pedidos configurables; los valores y sus restricciones
+se documentan en la [guía de infraestructura](terraform/README.md).
+
+Los workflows **Aplicar** y **Destruir** también permiten operar desde GitHub Actions.
+Requieren cargar las credenciales del laboratorio en los secrets del repositorio y renovarlas
+cada sesión: ver [el pipeline](terraform/README.md#el-pipeline-de-github-actions).
+
+La infraestructura consume crédito del laboratorio mientras está desplegada. Al terminar la
+sesión, eliminá los recursos con el procedimiento de la guía:
+
+```bash
+bash terraform/organization/scripts/tf.sh destroy
+```
+
+## Solución de problemas
+
+### La web no responde o los modelos siguen pendientes
+
+Primero verificá los contenedores y los logs:
+
+```bash
+docker compose ps -a
+docker compose logs --tail=100 api demo-init procesador evaluador
+```
+
+`demo-init` y `migraciones` son tareas que terminan después de preparar los datos; que
+aparezcan detenidas con código de salida `0` es normal. El estado de la API no implica que
+los cinco modelos ya estén listos: consultá `/api/publico/demo` o el catálogo.
+
+### Falló la descarga o la carga de los datos iniciales
+
+Después de corregir la causa que muestran los logs (por ejemplo, un problema de conexión),
+reintentá la preparación. Se conserva la caché:
+
+```bash
 docker compose run --rm demo-init
-# Si falló la evaluación o se agotaron los envíos, reintentar explícitamente:
+```
+
+### Un modelo inicial quedó con error de evaluación
+
+Reintentá explícitamente la identidad afectada; este ejemplo usa DenseNet121:
+
+```bash
 docker compose exec procesador python -m app.reintentar_demo --nombre torax-rx-densenet121 --version 1.0.0
 docker compose restart procesador
-docker compose run --rm herramientas python tools/esperar_modelo.py --timeout 1800
+docker compose run --rm herramientas python tools/esperar_modelo.py --nombre torax-rx-densenet121 --version 1.0.0 --timeout 1800
 ```
 
-La recuperación actúa solo sobre la identidad indicada, conserva su ID y rechaza reintentar
-un modelo que ya esté listo o en curso. Los otros modelos no se republican.
-No hace falta borrar volúmenes ni modelos. `GET /api/publico/demo` informa solo el estado,
-sin credenciales ni etiquetas del conjunto reservado. Informa estado global, cantidades
-esperadas/listas/con error/pendientes y una lista de estados e IDs por modelo inicial.
-Un estado parcial permite seguir usando los modelos listos; no cuenta modelos de usuarios
-como parte de los cinco iniciales.
+El reintento conserva el ID, afecta solo al modelo indicado y rechaza modelos que ya estén
+listos o en curso. No requiere borrar volúmenes ni volver a publicar los otros modelos.
 
-Útiles:
+Para seguir los resultados en tiempo real:
 
 ```bash
-docker compose logs -f evaluador          # ver la evaluación avanzar
-docker compose logs -f procesador         # ver llegar los resultados
-docker compose exec db psql -U ateneo -c "select nombre, estado_evaluacion, accuracy from modelo"
+docker compose logs -f evaluador procesador
 ```
 
-Consola de MinIO: <http://localhost:9001> (minioadmin / minioadmin).
+## Documentación técnica
 
-## Desarrollo sin Docker (tests y frontend con recarga)
-
-```bash
-python -m venv .venv && .venv/Scripts/activate      # o source .venv/bin/activate
-pip install -r requirements-dev.txt
-pytest                                               # tests de ateneo_ml, worker, evaluador, backend
-cd frontend && npm install && npm run dev            # http://localhost:5173, proxy /api → :8080
-```
-
-En Windows sin el runtime de Visual C++, `onnx` no carga y sus tests se saltean:
-`docker compose run --rm tests` corre la suite completa.
-
-El 5173 es **solo para desarrollar** con recarga en caliente, y necesita el Docker levantado: hace
-proxy de `/api` al 8080.
-
-## Desplegar en AWS Academy
-
-Ver [terraform/README.md](terraform/README.md). En CloudShell:
-
-```bash
-git clone https://github.com/nnicokim/TP-AWS.git ~/ateneo && cd ~/ateneo
-bash terraform/organization/scripts/bootstrap-estado.sh                 # una vez por cuenta
-cp terraform/organization/terraform.tfvars.example terraform/organization/terraform.tfvars   # email_admin y email_alertas
-bash terraform/organization/scripts/tf.sh apply                          # todo: red, base, imágenes, servicios
-bash terraform/organization/scripts/tf.sh output url                     # el sitio
-bash terraform/organization/scripts/tf.sh destroy                        # al terminar cada sesión de trabajo
-```
-
-También se despliega desde GitHub Actions (`Aplicar`), pero solo con las credenciales del lab
-cargadas a mano en los secrets del repositorio: vencen cada sesión y sin ellas no hay despliegue
-(ver [el pipeline](terraform/README.md#el-pipeline-de-github-actions)).
-
-**Límites de pedidos.** Para que nadie deje la app sin servicio a fuerza de pedidos, API Gateway
-deja pasar hasta 500 por segundo en cada ruta, sumando a todos, y el WAF del ALB le pone a cada
-cliente su tope: 300 por minuto por token, y 1.200 por minuto por IP en las rutas sin token. Un
-cliente que lo pasa recibe `429` y los demás siguen andando. Son variables y se cambian en vivo
-con un apply (`tf.sh apply -var waf_pedidos_por_cuenta=20`). De dónde sale cada número y qué
-queda sin cubrir, en
-[terraform/README.md](terraform/README.md#que-nadie-deje-la-app-sin-servicio-a-fuerza-de-pedidos).
+| Documento | Qué consultar |
+| --- | --- |
+| [specs.md](specs.md) | Flujos del producto, API, contratos, permisos y criterios de aceptación |
+| [architecture.md](architecture.md) | Diseño del código, componentes, puertos y adaptadores |
+| [terraform/README.md](terraform/README.md) | Configuración y operación de AWS, Cognito, límites y pipeline |
+| [arquitectura-aws.drawio](arquitectura-aws.drawio) | Diagrama de infraestructura; se abre con draw.io |
+| [models_specs.md](models_specs.md) | Modelos de la demo, contratos, conjuntos de evaluación y licencias |
