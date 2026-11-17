@@ -224,6 +224,14 @@ Al rato de pasar los 20 por minuto, los `200` se vuelven `429` y llega el mail d
 `ateneo-waf-por-ip`. API Gateway toma el cambio en segundos; el WAF pone en cero sus cuentas al
 cambiar un tope y puede tardar hasta un minuto en volver a cortar.
 
+Para ver el tope sin cambiarlo alcanza con mandar 20 pedidos a la vez, desde cualquier PC con
+`curl`: es como se probó el 17/11. La dirección de la api está en el resumen de `Aplicar` y en el
+`config.json` del sitio.
+
+```bash
+seq 6000 | xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$API/api/publico/demo" | sort | uniq -c
+```
+
 ## Correcciones respecto de la Entrega 2
 
 La devolución de la E2 llegó el 16/10 con tres correcciones. Las tres están implementadas:
@@ -282,6 +290,14 @@ cuenta como publicador, y de ahí salió el tercer cliente sin grupo y la elecci
 app. El 11/11, el merge a `main` desplegó todo junto: «Apply complete! Resources: 7 added, 4
 changed, 7 destroyed».
 
+El 17/11, `Aplicar` corrió a mano desde la rama `seguridad/limite-por-cliente` sobre un lab
+destruido y terminó en nueve minutos y medio con «Apply complete! Resources: 191 added»: los dos
+topes del WAF y sus dos alarmas se crearon sin errores. Después, desde una PC, se mandaron 6.000
+pedidos a `/api/publico/demo`, 20 a la vez, con los topes por defecto, y el pedido siguiente
+recibió `429` con `{"error": "demasiados_pedidos", …}`. Ese `429` solo lo da la regla `por-ip`:
+los pedidos no llevaban token, y las reglas administradas contestan `403`. Así que también quedó
+probado que `x-ip-cliente` llega al ALB con la IP del cliente.
+
 ### Lo que falta probar
 
 Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas andar:
@@ -292,7 +308,7 @@ Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas 
 | La cuota de vCPU de Fargate con todo escalado (8,5 vCPU) | El worker en 4 tareas con el evaluador corriendo | Bajar tamaños y máximos en `ecs.tf` |
 | Las llamadas admin a Cognito desde las tareas de la api con `LabRole` (`AdminListGroupsForUser`, `AdminAddUserToGroup`), para elegir el tipo de cuenta | Registrarse desde «Ingresar», elegir institución y analizar un estudio | Registrarse por «Registrate como institución / publicador», que da el grupo con la Lambda |
 | El recorrido completo: login, consulta, junta y publicación con el evaluador arrancando de 0 | Los criterios de aceptación de `specs.md` §13 | — |
-| Los dos topes del WAF y que `x-ip-cliente` llegue al ALB | Con el tope bajado, los `429` del bucle de «Cambiarlos en vivo» y el mail de su alarma; para `por-cuenta`, lo mismo con un token de una sesión | Si `por-ip` nunca corta, el encabezado no llega: lo muestran los pedidos de muestra de la regla en la consola del WAF. Esas rutas quedan acotadas por el límite de API Gateway |
+| El tope `por-cuenta` y el mail de las alarmas del WAF (`por-ip` ya cortó, el 17/11) | La prueba de «Cambiarlos en vivo» con `-H "Authorization: Bearer <access token>"` contra una ruta con token; el mail llega si la suscripción de SNS está confirmada | Las rutas con token quedan acotadas por el límite de API Gateway |
 
 ## Lo que marca tfsec, y por qué
 
