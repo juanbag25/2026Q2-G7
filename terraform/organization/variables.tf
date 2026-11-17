@@ -10,8 +10,14 @@ variable "zonas" {
   default     = ["us-east-1a", "us-east-1b"]
 
   validation {
-    condition     = length(var.zonas) == 2
-    error_message = "Hacen falta exactamente dos zonas."
+    condition     = length(var.zonas) == 2 && length(distinct(var.zonas)) == 2
+    error_message = "Hacen falta exactamente dos zonas, distintas: el ALB y cada capa de subredes van en las dos."
+  }
+
+  # Cambiar region sin cambiar zonas fallaba recién en el apply, al crear la primera subred.
+  validation {
+    condition     = alltrue([for z in var.zonas : can(regex("^${var.region}[a-z]$", z))])
+    error_message = "Las zonas tienen que ser de var.region: con region = \"us-east-1\", por ejemplo \"us-east-1a\"."
   }
 }
 
@@ -19,18 +25,39 @@ variable "sufijo" {
   description = "Sufijo de los buckets y del dominio de Cognito (únicos en todo AWS). Vacío = uno al azar, fijo desde el primer apply."
   type        = string
   default     = ""
+
+  # Va en el nombre de los cinco buckets (S3 no acepta mayúsculas ni guiones bajos) y en el
+  # prefijo del dominio de Cognito, que además rechaza las palabras aws, amazon y cognito. Uno
+  # que no sirve fallaba recién en el apply, con parte de la infraestructura ya creada.
+  validation {
+    condition = var.sufijo == "" || (
+      can(regex("^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$", var.sufijo)) &&
+      !strcontains(var.sufijo, "aws") && !strcontains(var.sufijo, "amazon") && !strcontains(var.sufijo, "cognito")
+    )
+    error_message = "Vacío, o de 1 a 20 minúsculas, dígitos y guiones, sin guion al principio ni al final, y sin «aws», «amazon» ni «cognito»."
+  }
 }
 
 variable "email_admin" {
   description = "El admin_plataforma inicial. Cognito le manda una contraseña temporal. Vacío = sin admin (los admins se crean con Terraform)."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.email_admin == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.email_admin))
+    error_message = "Una dirección de mail (alguien@dominio.com), o vacío para no crear el admin inicial."
+  }
 }
 
 variable "email_alertas" {
   description = "Recibe las alarmas de operación por SNS (colas de fallidos, 5xx del ALB). Vacío = sin suscripción."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.email_alertas == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.email_alertas))
+    error_message = "Una dirección de mail (alguien@dominio.com), o vacío para no suscribir a nadie a las alarmas."
+  }
 }
 
 variable "datos_demo" {
@@ -143,4 +170,11 @@ variable "mensajes_por_worker" {
   description = "Mensajes esperando en `inferencias` por tarea del worker a partir de los cuales se agrega otra."
   type        = number
   default     = 10
+
+  # Es el objetivo del backlog por tarea y el umbral de la alarma de escalones (escalado.tf): con
+  # 0, «hay al menos 0 mensajes esperando» siempre es cierto, y el worker crece sin trabajo.
+  validation {
+    condition     = var.mensajes_por_worker >= 1
+    error_message = "Al menos 1 mensaje por tarea."
+  }
 }

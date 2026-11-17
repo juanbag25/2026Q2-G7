@@ -7,7 +7,8 @@
 #   evaluador    ml       evaluación   0 a 1    2 · 4 GB        hay mensajes en evaluaciones     ninguna
 #
 # Solo api y procesador reciben DATABASE_URL (de Secrets Manager). Cuando cambia la imagen, ECS
-# reemplaza las tareas de a poco y no saca una vieja hasta que la nueva está sana.
+# reemplaza las tareas de a poco y no saca una vieja hasta que la nueva está sana; si las nuevas
+# no llegan a estar sanas, vuelve solo a la versión anterior.
 
 resource "aws_ecs_cluster" "ateneo" {
   name = "ateneo"
@@ -135,6 +136,15 @@ resource "aws_ecs_service" "s" {
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
   health_check_grace_period_seconds  = each.value.puerto != null ? 60 : null
+
+  # Una imagen que se cae al arrancar, o una api que nunca pasa el health check: sin esto, ECS
+  # lanza tareas nuevas para siempre, las viejas siguen atendiendo y el apply termina en verde
+  # con el servicio a medio desplegar. Con esto, tras varias tareas fallidas corta el despliegue
+  # y vuelve a la definición de tarea anterior, y el evento queda en la consola del servicio.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = local.sub[each.value.capa]

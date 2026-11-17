@@ -37,6 +37,23 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = var.api_rafaga
   }
 
+  # /callback y /logout van directo a la Lambda, sin pasar por el ALB: ninguno de los dos topes
+  # del WAF los ve, y sin esto solo los frenaba el límite de arriba (500 por segundo). Cada pedido
+  # a /callback hace correr la Lambda, y uno con code y un state que nombra un cliente le pega
+  # además al endpoint de tokens de Cognito. Un login es un pedido a /callback (dos si se elige
+  # el tipo de cuenta): con 10 por segundo y ráfaga de 20, un aula de 40 que entra a la vez pasa
+  # en unos dos segundos. Es un tope para todos juntos, como el de las otras rutas: quien mande
+  # más deja sin login a los demás mientras siga, pero nadie hace correr la Lambda cientos de
+  # veces por segundo.
+  dynamic "route_settings" {
+    for_each = aws_apigatewayv2_route.login
+    content {
+      route_key              = route_settings.key
+      throttling_rate_limit  = 10
+      throttling_burst_limit = 20
+    }
+  }
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway.arn
     format = jsonencode({

@@ -21,7 +21,7 @@ sobre `terraform/modules`).
 | Endpoint Gateway de S3 y cuatro de interfaz (`ecr.api`, `ecr.dkr`, `logs`, `sqs`) en subredes propias | `red.tf`, módulo externo `vpc-endpoints` |
 | Grupos de seguridad encadenados; procesador, worker, evaluador y constructor sin entrada | `seguridad.tf` |
 | API Gateway (HTTP API, HTTPS) → VPC Link → ALB interno + WAF | `api.tf`, `balanceador.tf` |
-| Límites de pedidos: 500 por segundo por ruta en API Gateway; en el WAF, 300 por minuto por token y 1.200 por minuto por IP en las rutas sin token | `api.tf`, `balanceador.tf`, `variables.tf` |
+| Límites de pedidos: 500 por segundo por ruta en API Gateway, y 10 en `/callback` y `/logout`, que no pasan por el WAF; en el WAF, 300 por minuto por token y 1.200 por minuto por IP en las rutas sin token | `api.tf`, `balanceador.tf`, `variables.tf` |
 | El autorizador JWT en todo `/api/*` salvo `/api/health` y `/api/publico/*`, que es el catálogo que ve el Visitante | `api.tf`, `backend/app/api/rutas/publico.py` |
 | Cognito: cuatro grupos, Hosted UI con tres clientes («Ingresar» y crear cuenta de cada tipo), Lambda de post-confirmación, admin inicial | `cognito.tf` |
 | El login de la clase: sitio en S3 y Lambda en `/callback` | `cognito.tf`, `api.tf`, `lambda/` |
@@ -150,6 +150,13 @@ cuerpo tiene el formato de error del backend, así que el sitio muestra el detal
 tiene su alarma (`ateneo-waf-por-cuenta`, `ateneo-waf-por-ip`), que avisa por SNS en el minuto en
 que bloquea algo. Las dos cuestan USD 1 por mes cada una, prorrateado por hora: unos 7 centavos
 por día prendido.
+
+**Las rutas del login tienen su propio tope.** `/callback` y `/logout` van de API Gateway directo
+a la Lambda, sin pasar por el ALB, así que el WAF no las ve. API Gateway les pone 10 pedidos por
+segundo con ráfaga de 20 (`route_settings` en `api.tf`). Un login es un pedido a `/callback`, dos
+si se elige el tipo de cuenta: un aula de 40 que entra a la vez pasa en unos dos segundos. Como el
+de las otras rutas, es un tope para todos juntos: quien mande más deja sin login a los demás
+mientras siga, pero nadie hace correr la Lambda cientos de veces por segundo.
 
 **De dónde salen los números.**
 
@@ -309,6 +316,8 @@ Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas 
 | Las llamadas admin a Cognito desde las tareas de la api con `LabRole` (`AdminListGroupsForUser`, `AdminAddUserToGroup`), para elegir el tipo de cuenta | Registrarse desde «Ingresar», elegir institución y analizar un estudio | Registrarse por «Registrate como institución / publicador», que da el grupo con la Lambda |
 | El recorrido completo: login, consulta, junta y publicación con el evaluador arrancando de 0 | Los criterios de aceptación de `specs.md` §13 | — |
 | El tope `por-cuenta` y el mail de las alarmas del WAF (`por-ip` ya cortó, el 17/11) | La prueba de «Cambiarlos en vivo» con `-H "Authorization: Bearer <access token>"` contra una ruta con token; el mail llega si la suscripción de SNS está confirmada | Las rutas con token quedan acotadas por el límite de API Gateway |
+| El tope de `/callback` y `/logout` | `seq 60 \| xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$API/callback" \| sort \| uniq -c`: `302` hasta el tope y después `429` | Las dos rutas quedan con el límite general de API Gateway |
+| El circuit breaker de ECS | Desplegar una versión de la api que se cae al arrancar: el servicio corta el despliegue, vuelve a la definición anterior y lo anota en sus eventos | Queda como antes: ECS reintenta y las tareas viejas siguen atendiendo |
 
 ## Lo que marca tfsec, y por qué
 
@@ -393,7 +402,7 @@ proveedores, así que esa línea es lo único que garantiza que la cátedra baje
 
 ### Funciones
 
-27 distintas. Las que hacen algo que se nota:
+28 distintas. Las que hacen algo que se nota:
 
 | Función | Para qué |
 |---------|----------|
@@ -401,11 +410,12 @@ proveedores, así que esa línea es lo único que garantiza que la cátedra baje
 | `templatefile` | El script del constructor, que se arma con las direcciones de la cuenta (`imagenes.tf`) |
 | `jsonencode`, `jsondecode` | Las políticas de los buckets y de las colas |
 | `merge` | Las once subredes, aplanando el mapa de capas; y los cinco endpoints, juntando el gateway con los cuatro de interfaz (`red.tf`) |
-| `can`, `regex` | Las validaciones de `modules/cola`: un nombre que no sirve para una cola de SQS falla en el plan, no en el apply |
+| `can`, `regex`, `alltrue` | Las validaciones: un nombre que no sirve para una cola de SQS (`modules/cola`), o un sufijo que no sirve para un bucket o una zona de otra región (`variables.tf`), falla en el plan, no en el apply |
 | `abspath` | La ruta del script de los buckets y la raíz del repositorio, que no dependen de desde dónde se corra |
 | `toset`, `keys`, `flatten`, `distinct`, `sort`, `concat`, `length`, `contains`, `strcontains`, `split`, `join`, `replace`, `upper`, `endswith`, `tostring`, `urlencode` | El resto, repartidas |
 
-Hay además 15 variables y 10 salidas en el root, y 9 bloques `validation`.
+Hay además 15 variables y 10 salidas en el root, y 14 bloques `validation` (10 en el root y 4 en
+`modules/cola`).
 
 ## El pipeline de GitHub Actions
 
