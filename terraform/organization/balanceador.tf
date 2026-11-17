@@ -23,9 +23,17 @@ resource "aws_lb_target_group" "api" {
   vpc_id               = aws_vpc.ateneo.id
   deregistration_delay = 30
 
+  # Cada 10 s, y con 2 respuestas buenas seguidas la tarea recibe tráfico: unos 20 s. Con los
+  # valores por defecto (cada 30 s, 5 buenas) eran dos minutos y medio, y como ECS no saca una
+  # tarea vieja hasta que la nueva está sana (ecs.tf), cada despliegue de la api los esperaba.
+  # Con 3 malas seguidas (30 s) la saca. /health no toca la base (backend/app/api/rutas/salud.py),
+  # así que preguntar más seguido no le cuesta nada a la api.
   health_check {
-    path    = "/health"
-    matcher = "200"
+    path                = "/health"
+    matcher             = "200"
+    interval            = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
   }
 }
 

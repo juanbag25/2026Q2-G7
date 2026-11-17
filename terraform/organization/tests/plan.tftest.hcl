@@ -180,6 +180,16 @@ run "computo" {
     condition     = length(aws_wafv2_web_acl_association.alb) == 1
     error_message = "WAF asociado al ALB."
   }
+  assert {
+    condition = alltrue([
+      for s in aws_ecs_service.s : one(s.deployment_circuit_breaker).enable && one(s.deployment_circuit_breaker).rollback
+    ])
+    error_message = "Los cuatro servicios vuelven solos a la versión anterior si las tareas nuevas no arrancan."
+  }
+  assert {
+    condition     = one(aws_lb_target_group.api.health_check).interval == 10 && one(aws_lb_target_group.api.health_check).healthy_threshold == 2
+    error_message = "Una tarea nueva de la api recibe tráfico tras dos chequeos buenos cada 10 s, no a los dos minutos y medio."
+  }
 }
 
 run "login_de_la_clase" {
@@ -302,6 +312,13 @@ run "limite_por_cliente" {
     condition     = aws_apigatewayv2_stage.default.default_route_settings[0].throttling_rate_limit == 500 && aws_apigatewayv2_stage.default.default_route_settings[0].throttling_burst_limit == 1000
     error_message = "API Gateway deja pasar 500 pedidos por segundo por ruta, con ráfaga de 1000."
   }
+  # Las rutas del login van directo a la Lambda: el WAF no las ve, así que su tope es este.
+  assert {
+    condition = {
+      for r in aws_apigatewayv2_stage.default.route_settings : r.route_key => "${r.throttling_rate_limit}/${r.throttling_burst_limit}"
+    } == { "GET /callback" = "10/20", "GET /logout" = "10/20" }
+    error_message = "/callback y /logout tienen su propio tope en API Gateway: 10 por segundo, ráfaga de 20."
+  }
   assert {
     condition = keys(aws_cloudwatch_metric_alarm.waf_tasa) == ["por-cuenta", "por-ip"] && alltrue([
       for a in aws_cloudwatch_metric_alarm.waf_tasa :
@@ -335,6 +352,20 @@ run "tope_por_debajo_del_minimo" {
     waf_pedidos_por_cuenta = 5
   }
   expect_failures = [var.waf_pedidos_por_cuenta]
+}
+
+# Valores que antes fallaban recién en el apply, con parte de la infraestructura ya creada: un
+# sufijo que no sirve para un bucket, una zona de otra región, mails mal escritos, un umbral en 0.
+run "variables_invalidas" {
+  command = plan
+  variables {
+    sufijo              = "Ateneo_1"
+    zonas               = ["us-east-1a", "us-west-2a"]
+    email_admin         = "admin"
+    email_alertas       = "alertas@ejemplo"
+    mensajes_por_worker = 0
+  }
+  expect_failures = [var.sufijo, var.zonas, var.email_admin, var.email_alertas, var.mensajes_por_worker]
 }
 
 run "sin_waf_con_admin" {

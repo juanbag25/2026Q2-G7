@@ -42,7 +42,7 @@ jobs:
         run: terraform validate
         working-directory: terraform/organization
 
-      # La arquitectura contra un AWS simulado (mock_provider): ocho bloques run, sin cuenta.
+      # La arquitectura contra un AWS simulado (mock_provider): nueve bloques run, sin cuenta.
       - name: Pruebas
         run: terraform test
         working-directory: terraform/organization
