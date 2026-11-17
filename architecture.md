@@ -1,6 +1,7 @@
 # Ateneo · Arquitectura de la aplicación
 
-> Estado: borrador 5 · 2026-11-11 · Entrega 4: con los permisos por rol, la junta y el tipo de cuenta
+> Estado: borrador 6 · 2026-11-16 · Entrega 4: con los permisos por rol, la junta, el tipo de cuenta
+> y el tope de pedidos por cliente
 > Complementa a [specs.md](specs.md) (qué hace) y a «Ateneo en AWS 2.0» (la infraestructura, en
 > [terraform/](terraform/README.md) y dibujada en [arquitectura-aws.drawio](arquitectura-aws.drawio)).
 > Este documento dice **cómo está construido el código** para que entre en esa infraestructura y
@@ -42,6 +43,14 @@ Cuatro servicios de ECS sobre Fargate, dos imágenes, y el sitio en S3.
 Las flechas son las que permiten los grupos de seguridad (`terraform/organization/seguridad.tf`). **El worker y
 el evaluador no tocan la base ni tienen credenciales**: publican en `resultados` y el procesador,
 el único escritor, lo aplica. **Nadie llama al worker ni al evaluador**: no abren puertos.
+
+**Lo que entra pasa por dos topes antes de la api.** API Gateway deja pasar hasta 500 pedidos por
+segundo en cada ruta, sumando a todos los clientes. Después, el WAF del ALB cuenta los de cada
+cliente en el último minuto: 300 por token (el `Authorization`) y, en las dos rutas sin token,
+1.200 por IP, que lee de `x-ip-cliente`, el encabezado donde API Gateway escribe la IP del
+cliente (el ALB solo ve la del VPC Link). Quien pasa su tope recibe `429` y los demás siguen
+andando. Lo que el WAF bloquea ya pasó por API Gateway y gastó de su límite: por eso es más que
+los ~200 por segundo que atiende la api. Los números y lo que no cubren, en `terraform/README.md`.
 
 **La api es la única pieza de la VPC que habla con Cognito**, y sale por el NAT de la capa de
 aplicación: baja las claves públicas del user pool para validar el token y, cuando una cuenta
@@ -273,7 +282,9 @@ Los mensajes de `resultados`:
 - Routers por recurso; reciben casos de uso por `Depends`. `dependencias.py` es el único módulo
   de la api que importa `infraestructura`.
 - `errores.py`: `NoAutenticado` 401, `SinPermiso` 403, `NoEncontrado` 404, `Conflicto` 409,
-  `EntradaInvalida` 422, `ServicioNoDisponible` 502.
+  `EntradaInvalida` 422, `ServicioNoDisponible` 502. El `429 demasiados_pedidos` no sale de acá:
+  lo contesta el WAF del ALB con el mismo formato (`{"error", "detalle"}`), así que el sitio lo
+  muestra como cualquier otro error.
 - `sitio.py`: en local monta el sitio en `/` **después** de los routers y devuelve `index.html` para
   cualquier `404` fuera de `/api`. En AWS el sitio está en S3 y la tarea arranca sin él.
 - `GET /health` (el health check del ALB) sin dependencias ni base; `GET /api/health` agrega el

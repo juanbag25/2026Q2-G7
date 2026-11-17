@@ -9,7 +9,8 @@ valida su contrato y el evaluador, en una subred aislada, lo mide contra el conj
 toma y el procesador escribe el resultado).
 
 Esta versión implementa la arquitectura de «Ateneo en AWS 2.0»: ECS Fargate, API Gateway
-con HTTPS, Cognito, tres colas de SQS y un despliegue completo con `terraform apply`.
+con HTTPS, un WAF con un tope de pedidos por cliente, Cognito, tres colas de SQS y un despliegue
+completo con `terraform apply`.
 
 - [specs.md](specs.md) · qué hace: flujos, API, contrato del modelo, esquema, criterios de aceptación.
 - [architecture.md](architecture.md) · cómo está construido: servicios, puertos y adaptadores, colas.
@@ -166,3 +167,11 @@ bash terraform/organization/scripts/tf.sh destroy                        # al te
 También se despliega desde GitHub Actions (`Aplicar`), pero solo con las credenciales del lab
 cargadas a mano en los secrets del repositorio: vencen cada sesión y sin ellas no hay despliegue
 (ver [el pipeline](terraform/README.md#el-pipeline-de-github-actions)).
+
+**Límites de pedidos.** Para que nadie deje la app sin servicio a fuerza de pedidos, API Gateway
+deja pasar hasta 500 por segundo en cada ruta, sumando a todos, y el WAF del ALB le pone a cada
+cliente su tope: 300 por minuto por token, y 1.200 por minuto por IP en las rutas sin token. Un
+cliente que lo pasa recibe `429` y los demás siguen andando. Son variables y se cambian en vivo
+con un apply (`tf.sh apply -var waf_pedidos_por_cuenta=20`). De dónde sale cada número y qué
+queda sin cubrir, en
+[terraform/README.md](terraform/README.md#que-nadie-deje-la-app-sin-servicio-a-fuerza-de-pedidos).
