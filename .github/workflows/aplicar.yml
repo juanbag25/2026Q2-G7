@@ -2,8 +2,9 @@ name: Aplicar
 
 # Se dispara solo al mergear un PR a main (un push a main) y también a mano. Las credenciales del
 # lab vencen cada sesión (unas 4 horas): antes de mergear hay que cargar las de la sesión actual en
-# los secrets. Si no hay credenciales, el job termina en verde avisándolo; si están vencidas, falla
-# con un mensaje claro. El lab cuesta unos USD 7 por día prendido: «Destruir» sigue siendo a mano.
+# los secrets. Sin credenciales vigentes no hay forma de desplegar: si faltan, el job falla en el
+# init (sin credenciales no hay bucket del estado ni backend.hcl); si están vencidas, falla con un
+# mensaje claro. El lab cuesta unos USD 7 por día prendido: «Destruir» sigue siendo a mano.
 on:
   push:
     branches: [main]

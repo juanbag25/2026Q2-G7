@@ -1,6 +1,7 @@
 # Observabilidad (sección 10): un tema de SNS con la suscripción por email del admin, y alarmas
-# que avisan cuando hay mensajes en cualquier cola de fallidos o el ALB devuelve errores 5xx.
-# Los avisos a los usuarios quedan en la app; SNS es para operación (decisión 10).
+# que avisan cuando hay mensajes en cualquier cola de fallidos, el ALB devuelve errores 5xx o el
+# WAF corta a alguien por pedir de más. Los avisos a los usuarios quedan en la app; SNS es para
+# operación (decisión 10).
 
 resource "aws_sns_topic" "alertas" {
   name = "ateneo-alertas"
@@ -22,6 +23,27 @@ resource "aws_cloudwatch_metric_alarm" "fallidos" {
   metric_name         = "ApproximateNumberOfMessagesVisible"
   dimensions          = { QueueName = module.colas[each.key].nombre_fallidos }
   statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alertas.arn]
+  ok_actions          = [aws_sns_topic.alertas.arn]
+}
+
+# Un tope por tasa del WAF bloqueó pedidos en el último minuto (balanceador.tf): alguien pasó el
+# tope por cuenta o, en las rutas sin token, el tope por IP. Una alarma por regla, para que el
+# mail diga cuál. Sin bloqueos el WAF no publica el dato, y eso es «sin problema».
+resource "aws_cloudwatch_metric_alarm" "waf_tasa" {
+  for_each = var.waf_activo ? local.reglas_tasa : {}
+
+  alarm_name          = "ateneo-waf-${each.key}"
+  alarm_description   = "El WAF contestó 429 a pedidos que pasaron el tope ${each.key} (${each.value} por minuto)."
+  namespace           = "AWS/WAFV2"
+  metric_name         = "BlockedRequests"
+  dimensions          = { WebACL = aws_wafv2_web_acl.alb[0].visibility_config[0].metric_name, Rule = each.key, Region = var.region }
+  statistic           = "Sum"
   period              = 60
   evaluation_periods  = 1
   comparison_operator = "GreaterThanThreshold"

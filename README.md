@@ -2,18 +2,21 @@
 
 Marketplace de modelos de IA clínica · Cloud Computing 82.08 · ITBA.
 
-Una portada que cuenta qué ofrece Ateneo y dos secciones detrás, una por público.
+Una portada que cuenta qué ofrece Ateneo, el catálogo de modelos y dos caminos.
 **Publicar un modelo** (el ONNX va del navegador directo al bucket con una URL prefirmada, la API
 valida su contrato y el evaluador, en una subred aislada, lo mide contra el conjunto reservado) y
-**consultar un estudio** (la API encola el pedido en SQS, un worker lo toma y el procesador escribe
-el resultado).
+**consultar un estudio** desde la ficha de un modelo (la API encola el pedido en SQS, un worker lo
+toma y el procesador escribe el resultado).
 
 Esta versión implementa la arquitectura de «Ateneo en AWS 2.0»: ECS Fargate, API Gateway
-con HTTPS, Cognito, tres colas de SQS y un despliegue completo con `terraform apply`.
+con HTTPS, un WAF con un tope de pedidos por cliente, Cognito, tres colas de SQS y un despliegue
+completo con `terraform apply`.
 
 - [specs.md](specs.md) · qué hace: flujos, API, contrato del modelo, esquema, criterios de aceptación.
 - [architecture.md](architecture.md) · cómo está construido: servicios, puertos y adaptadores, colas.
 - [terraform/README.md](terraform/README.md) · la infraestructura, el login con Cognito y cómo desplegar.
+- [arquitectura-aws.drawio](arquitectura-aws.drawio) · el diagrama de la infraestructura en AWS, con los íconos oficiales (se abre con draw.io).
+- [models_specs.md](models_specs.md) · los cinco modelos de la demo, sus contratos y sus conjuntos reservados.
 
 ## Estructura
 
@@ -22,9 +25,10 @@ ateneo_ml/    preprocesamiento + motor ONNX + métricas, compartido por worker y
 backend/      imagen backend: la api (FastAPI) y el procesador (escribe los resultados)
 worker/       imagen ml: lee la cola inferencias, sin base y sin puertos
 evaluador/    imagen ml: lee la cola evaluaciones, en la subred aislada
-frontend/     React + Vite + TypeScript (portada + publicación + consulta), con login de Cognito
+frontend/     React + Vite + TypeScript (portada, catálogo, ficha de cada modelo, publicar), con login de Cognito
 migraciones/  SQL; las aplica el procesador al arrancar
-tools/        bajar y verificar el modelo, preparar y subir el conjunto
+models/       los cinco modelos de la demo y sus conjuntos (catalogo.json, conjuntos.json)
+tools/        preparar la demo, bajar y verificar modelos, preparar y subir conjuntos, empaquetar el código
 terraform/    toda la infraestructura como código
 docker/       Dockerfiles de las dos imágenes, de los tests y la configuración de ElasticMQ
 ```
@@ -159,3 +163,15 @@ bash terraform/organization/scripts/tf.sh apply                          # todo:
 bash terraform/organization/scripts/tf.sh output url                     # el sitio
 bash terraform/organization/scripts/tf.sh destroy                        # al terminar cada sesión de trabajo
 ```
+
+También se despliega desde GitHub Actions (`Aplicar`), pero solo con las credenciales del lab
+cargadas a mano en los secrets del repositorio: vencen cada sesión y sin ellas no hay despliegue
+(ver [el pipeline](terraform/README.md#el-pipeline-de-github-actions)).
+
+**Límites de pedidos.** Para que nadie deje la app sin servicio a fuerza de pedidos, API Gateway
+deja pasar hasta 500 por segundo en cada ruta, sumando a todos, y el WAF del ALB le pone a cada
+cliente su tope: 300 por minuto por token, y 1.200 por minuto por IP en las rutas sin token. Un
+cliente que lo pasa recibe `429` y los demás siguen andando. Son variables y se cambian en vivo
+con un apply (`tf.sh apply -var waf_pedidos_por_cuenta=20`). De dónde sale cada número y qué
+queda sin cubrir, en
+[terraform/README.md](terraform/README.md#que-nadie-deje-la-app-sin-servicio-a-fuerza-de-pedidos).

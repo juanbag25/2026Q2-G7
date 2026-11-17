@@ -41,10 +41,30 @@ resource "aws_lb_listener" "api" {
 }
 
 # --- WAF ------------------------------------------------------------------------------
+#
+# Dos clases de reglas. Las dos por tasa van primero y cuentan cuántos pedidos manda cada
+# cliente: el límite de API Gateway es uno solo para todos, así que sin ellas uno que martilla le
+# saca el lugar a los demás y llena la api. Las administradas de AWS miran el contenido.
+#
+# El WAF está detrás de API Gateway: cuando bloquea, el pedido ya gastó su lugar en el límite de
+# API Gateway. Por eso ese límite queda por encima de lo que atiende la api (variables.tf). El WAF
+# cuida a la api de un cliente solo; contra muchos a la vez hace falta CloudFront con WAF delante
+# de todo, que el laboratorio no concede.
 
 locals {
   # Las reglas administradas de AWS: inyección SQL, entradas maliciosas conocidas y lo común.
   reglas_waf = ["AWSManagedRulesCommonRuleSet", "AWSManagedRulesKnownBadInputsRuleSet", "AWSManagedRulesSQLiRuleSet"]
+
+  # Las dos por tasa, nombre => tope por minuto. El nombre es también su métrica en CloudWatch,
+  # la que miran las alarmas (alertas.tf).
+  reglas_tasa = {
+    "por-cuenta" = var.waf_pedidos_por_cuenta
+    "por-ip"     = var.waf_pedidos_por_ip
+  }
+
+  # La IP del cliente. El ALB ve la del VPC Link, y el Forwarded que agrega la HTTP API
+  # (for=…;host=…;proto=…) el WAF no lo sabe leer: este lo escribe API Gateway (api.tf).
+  encabezado_ip = "x-ip-cliente"
 }
 
 resource "aws_wafv2_web_acl" "alb" {
@@ -56,11 +76,124 @@ resource "aws_wafv2_web_acl" "alb" {
     allow {}
   }
 
+  # El 429 de los topes lleva el formato de error del backend, así el sitio muestra el detalle
+  # en vez de un código (frontend/src/api/cliente.ts).
+  custom_response_body {
+    key          = "demasiados-pedidos"
+    content_type = "APPLICATION_JSON"
+    content = jsonencode({
+      error   = "demasiados_pedidos"
+      detalle = "Llegaron demasiados pedidos tuyos en el último minuto. Esperá un momento y volvé a intentar."
+    })
+  }
+
+  # Por token: cada valor distinto de Authorization es un cliente, y en la práctica una sesión de
+  # una cuenta. API Gateway lo reenvía tal cual (la api lo vuelve a validar) y en las rutas con
+  # token ya comprobó la firma: no se puede inventar uno. Minúsculas y espacios comprimidos,
+  # porque «Bearer x» y «bearer  x» son el mismo token para la api y tienen que ser la misma
+  # cuenta acá. Un pedido sin el encabezado no tiene clave y esta regla no lo cuenta.
+  rule {
+    name     = "por-cuenta"
+    priority = 0
+
+    action {
+      block {
+        custom_response {
+          response_code            = 429
+          custom_response_body_key = "demasiados-pedidos"
+        }
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = local.reglas_tasa["por-cuenta"]
+        evaluation_window_sec = 60
+        aggregate_key_type    = "CUSTOM_KEYS"
+
+        custom_key {
+          header {
+            name = "authorization"
+            text_transformation {
+              priority = 0
+              type     = "COMPRESS_WHITE_SPACE"
+            }
+            text_transformation {
+              priority = 1
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "por-cuenta"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Por IP, solo en las dos rutas sin token. Cuenta por la ruta y no por la falta de
+  # Authorization: si no, alguien que manda un token inventado distinto en cada pedido no cae en
+  # ninguna de las dos. La ruta se decodifica y normaliza antes de comparar, para que
+  # /api/%70ublico/ o /api//publico/ no se escapen. Si el encabezado no llega, el WAF no aplica la
+  # regla (no corta a nadie); si llega con algo que no es una IP, no lo cuenta.
+  rule {
+    name     = "por-ip"
+    priority = 1
+
+    action {
+      block {
+        custom_response {
+          response_code            = 429
+          custom_response_body_key = "demasiados-pedidos"
+        }
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = local.reglas_tasa["por-ip"]
+        evaluation_window_sec = 60
+        aggregate_key_type    = "FORWARDED_IP"
+
+        forwarded_ip_config {
+          header_name       = local.encabezado_ip
+          fallback_behavior = "NO_MATCH"
+        }
+
+        scope_down_statement {
+          regex_match_statement {
+            regex_string = "^/api/(publico/|health$)"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+            text_transformation {
+              priority = 1
+              type     = "NORMALIZE_PATH"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "por-ip"
+      sampled_requests_enabled   = true
+    }
+  }
+
   dynamic "rule" {
     for_each = local.reglas_waf
     content {
       name     = rule.value
-      priority = rule.key + 1
+      priority = length(local.reglas_tasa) + rule.key # después de las dos por tasa
 
       override_action {
         none {}

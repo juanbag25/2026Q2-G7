@@ -1,39 +1,44 @@
 # Ateneo · Especificación del pre-MVP
 
-> Estado: borrador 3 · 2026-09-07 · el código de este repo implementa lo que dice acá
-> Alcance: el paso anterior al MVP. Una portada y dos secciones que demuestran los dos caminos de la
-> arquitectura —inferencia (app → tabla `trabajo` → ALB interno → worker) y evaluación (subred
-> aislada → dataset reservado → métricas en la base)— con un modelo ONNX bajado de internet que
-> subimos a mano a S3, y un dataset público que hace de "conjunto reservado".
+> Estado: borrador 4 · 2026-11-09 · el código de este repo implementa lo que dice acá
+> Alcance: el paso anterior al MVP. Una portada, el catálogo, la ficha de cada modelo y la página
+> para publicar, que demuestran los dos caminos de la arquitectura —inferencia (api → cola
+> `inferencias` → worker → cola `resultados` → procesador) y evaluación (cola `evaluaciones` →
+> evaluador en la subred aislada → conjunto reservado → métricas agregadas)— con cinco modelos
+> ONNX bajados de internet y un conjunto público por tipo de estudio que hace de "conjunto reservado".
 
-> **Entrega 3.** Lo que cambia es el transporte, no el producto: la tabla
-> `trabajo` deja de ser la cola (D4, D5) y los pedidos viajan por SQS (`inferencias`,
-> `evaluaciones`); worker y evaluador ya no escriben en la base ni se los llama por HTTP, y un
-> procesador aplica los resultados (D6). Hay login con Cognito. Ver [architecture.md](architecture.md).
+> **Entrega 3.** Lo que cambió es el transporte, no el producto: la tabla `trabajo` dejó de ser
+> la cola y los pedidos viajan por SQS; worker y evaluador no escriben en la base ni se los llama
+> por HTTP, y un procesador aplica los resultados. Hay login con Cognito. La §2.2 dice qué
+> reemplazó a cada decisión de la Entrega 2.
 
 Documentos relacionados: [architecture.md](architecture.md) (diseño de la aplicación) ·
-`ateneo-en-aws.html` y `ateneo-paso-a-paso.html` (infraestructura, fuera del repo por ahora).
+[terraform/README.md](terraform/README.md) (la infraestructura y cómo desplegarla) ·
+[arquitectura-aws.drawio](arquitectura-aws.drawio) (el diagrama de la infraestructura) ·
+[models_specs.md](models_specs.md) (los cinco modelos y sus conjuntos).
 
 ---
 
 ## 1. Objetivo
 
-Probar de punta a punta, con código real y mínimo, que la infraestructura construida en la guía
-soporta el producto:
+Probar de punta a punta, con código real y mínimo, que la infraestructura (desde la Entrega 3, la
+de `terraform/`) soporta el producto:
 
-1. **Publicar un modelo (simulado).** Un botón hace lo que en el producto real pasa cuando un
-   publicador sube un modelo: el modelo entra al catálogo y la instancia aislada `eval-1` lo mide
-   contra el conjunto reservado. Al terminar, la fila del modelo tiene su accuracy.
-2. **Inferir una imagen.** Un usuario sube una imagen médica desde el navegador, el backend encola
-   un trabajo, un worker lo procesa y la pantalla muestra la predicción.
+1. **Publicar un modelo.** El publicador sube el ONNX y su contrato desde la pantalla: el modelo
+   entra al catálogo y el evaluador, en la subred aislada, lo mide contra el conjunto reservado.
+   Al terminar, la fila del modelo tiene su accuracy.
+2. **Inferir una imagen.** Un usuario sube una imagen médica desde el navegador, la api encola un
+   trabajo, un worker lo procesa y la pantalla muestra la predicción.
 
-**No es un MVP.** No hay permisos por rol ni facturación (la junta de varios modelos ya está: §5.4). Lo
+**No es un MVP.** Hay login con Cognito, permisos por rol y por autoría (§6, «Quién puede
+llamar a cada ruta») y juntas de varios modelos (§5.4), pero no organizaciones ni facturación. Lo
 que sí hay, de punta a punta, es el camino del publicador —subir el ONNX y su contrato desde la
-pantalla— y el del usuario clínico. El resto queda en §13 como evolución.
+pantalla— y el del usuario clínico. El resto queda en §14 como evolución.
 
 ## 2. Decisiones tomadas
 
-Resueltas en la conversación del 2026-09-07. Las que siguen abiertas están en §2.1.
+Resueltas el 2026-09-07, para la Entrega 2. Quedan como registro: la §2.2 dice qué reemplazó a
+las que cambiaron con la Entrega 3.
 
 | # | Tema | Decisión |
 |---|------|----------|
@@ -49,7 +54,7 @@ Resueltas en la conversación del 2026-09-07. Las que siguen abiertas están en 
 | D10 | Autenticación | Ninguna. Queda el punto de extensión. |
 | D11 | Stack | FastAPI + psycopg 3 (SQL explícito, sin ORM) + React / Vite / TypeScript. |
 
-### 2.1 Notas y cosas que siguen abiertas
+### 2.1 Notas de la Entrega 2
 
 - **Sobre D6.** La guía sugiere que el worker escriba el resultado con `insert … on conflict`.
   Elegí que no lo haga porque con el despachador en el backend el worker queda sin estado y sin
@@ -71,24 +76,49 @@ Resueltas en la conversación del 2026-09-07. Las que siguen abiertas están en 
   pantalla con su contrato. Nada de código cambia. Con dos modelos del mismo `tipo_estudio` se ve
   la comparación de accuracy contra el mismo conjunto, que es la tesis del producto.
 
+### 2.2 Qué reemplazó a cada decisión en la Entrega 3
+
+| # | En la Entrega 2 | Desde la Entrega 3 |
+|---|-----------------|--------------------|
+| D2 | Un modelo, `mediscan_pneumonia.onnx` | Cinco, de dos tipos de estudio (`torax-rx` y `cerebro-rm`), registrados en `models/catalogo.json` ([models_specs.md](models_specs.md)) |
+| D3 | Un conjunto de 200 casos de Rx de tórax | Uno de 200 casos por tipo de estudio, definidos en `models/conjuntos.json` |
+| D4 | `eval-1`, encendida a mano, hace polling a la base con `SKIP LOCKED` | La api encola en `evaluaciones`; el servicio `evaluador` pasa de 0 a 1 tarea cuando hay mensajes y publica el resultado en `resultados` |
+| D5 | Un despachador dentro del backend llama al worker por el ALB interno | La api encola en `inferencias` y el worker la lee: no hay ALB hacia los workers ni puertos de entrada |
+| D6 | El despachador escribe el resultado | El procesador es el único que escribe resultados: lee la cola `resultados` |
+| D7 | El backend sirve el sitio por el ALB, un solo origen | El sitio lo sirve S3 (corrección de la E2); la API está detrás de API Gateway, por HTTPS, con CORS hacia el sitio |
+| D10 | Sin autenticación | Cognito: Hosted UI, tres clientes (crear cuenta de institución, de publicador, e «Ingresar», que no da grupo) y cuatro grupos; API Gateway y el backend validan el access token, y cada router pide sus grupos |
+
 ## 3. Actores
 
-- **Operador** (nosotros): prepara y sube el conjunto reservado, enciende `eval-1`. El modelo ya
-  no lo sube: lo sube el publicador desde la pantalla (queda el camino a mano para sembrar el
-  bucket sin navegador).
-- **Publicador**: sube un modelo con su contrato en `/publicar` y mira su evaluación. Sin cuenta.
-- **Usuario clínico**: elige un modelo medido y consulta un estudio en `/consulta`. Sin cuenta.
-- **Sistemas**: backend con despachador (capa app), worker de inferencia (capa inferencia),
-  evaluador (`eval-1`).
+- **Operador** (nosotros): despliega con Terraform. Con `datos_demo` (el valor por defecto) el
+  despliegue prepara solo los cinco modelos y los conjuntos reservados, y el procesador los
+  publica; a mano queda el camino para sembrar el bucket sin navegador (§5.1).
+- **Publicador** (grupo `publicador`): sube un modelo con su contrato en `/publicar` y mira su
+  evaluación.
+- **Usuario clínico** (grupos `medico` y `admin_institucion`): elige un modelo en el catálogo
+  (`/modelos`) y consulta un estudio desde la ficha del modelo (`/modelos/<id>`), o se lo pasa a
+  una junta de 2 a 5 modelos en `/junta`.
+- **Admin de plataforma** (grupo `admin_plataforma`): lo crea Terraform; puede todo lo anterior y
+  ve lo de todas las cuentas.
+- **Visitante**: sin cuenta, ve la portada, el catálogo y las fichas.
+
+Instituciones y publicadores se registran solos; quien se registra desde «Ingresar» elige el tipo
+una sola vez dentro de la app (§6, «Quién puede llamar a cada ruta»). Una cuenta de médico la
+crea un admin desde la consola de Cognito, con contraseña temporal: la app todavía no tiene la
+invitación de la spec.
+- **Sistemas**: cuatro servicios de ECS —api y procesador (capa de aplicación), worker (capa de
+  inferencia) y evaluador (capa de evaluación, aislada)— y tres colas de SQS.
 
 ## 4. Dominio
 
 | Concepto | Qué es | Dónde vive |
 |----------|--------|------------|
-| **Modelo** | Un artefacto ONNX versionado con su contrato (`modelo.json`) y, una vez evaluado, sus métricas. Una fila por versión. | `s3://ateneo-modelos/modelos/<nombre>/<version>/` + tabla `modelo` |
-| **Estudio** | Una imagen subida por un usuario, de un tipo de estudio (`torax-rx`). Expira a los 7 días. | `s3://ateneo-estudios/estudios/<uuid>.<ext>` + tabla `estudio` |
-| **Trabajo** | Una inferencia de un modelo sobre un estudio, con estado, intentos y resultado. Es la "cola". | tabla `trabajo` |
-| **Conjunto de evaluación** | Casos reservados de un tipo de estudio, congelados en una versión, con manifiesto y verdad. | `s3://ateneo-evaluacion/<tipo>/<version>/` |
+| **Modelo** | Un artefacto ONNX versionado con su contrato (`modelo.json`) y, una vez evaluado, sus métricas. Una fila por versión. | `s3://ateneo-modelos-<sufijo>/modelos/<nombre>/<version>/` + tabla `modelo` |
+| **Estudio** | Una imagen subida por un usuario, de un tipo de estudio (`torax-rx`, `cerebro-rm`). Expira a los 7 días. | `s3://ateneo-estudios-<sufijo>/estudios/<uuid>.<ext>` + tabla `estudio` |
+| **Trabajo** | Una inferencia de un modelo sobre un estudio, con estado, intentos y resultado. La cola es SQS; la tabla guarda el estado. Es de quien lo creó (`creado_por`). | tabla `trabajo` + un mensaje en `inferencias` |
+| **Consulta (junta)** | De 2 a 5 trabajos sobre el mismo estudio, uno por modelo. Su estado y el consenso se calculan al leer (§5.4). | tabla `consulta` + `trabajo.consulta_id` |
+| **Cuenta** | El tipo que eligió, una sola vez, quien se registró desde «Ingresar»: institución o publicador. Los permisos salen de los grupos de Cognito. | Cognito + tabla `cuenta` |
+| **Conjunto de evaluación** | Casos reservados de un tipo de estudio, congelados en una versión, con manifiesto y verdad. | `s3://ateneo-evaluacion-<sufijo>/<tipo>/<version>/` |
 
 Reglas:
 
@@ -102,7 +132,13 @@ Reglas:
 
 ## 5. Flujos
 
-### 5.1 Preparación (una vez, por el operador)
+### 5.1 Preparación
+
+Con `datos_demo = true` (el valor por defecto) esto lo hace solo el despliegue:
+`tools/demo_assets.py` baja y verifica los cinco modelos de `models/catalogo.json` y prepara un
+conjunto por tipo de estudio (`models/conjuntos.json`). En AWS lo corre el constructor y en local
+el servicio `demo-init`; después el procesador publica los modelos y encola su evaluación. A mano,
+para un modelo o un conjunto propios:
 
 1. `tools/descargar_modelo.py --solo-descargar`: baja el ONNX y escribe el `modelo.json` de §7 al
    lado, en `./tmp/modelo`. **Esos son los dos archivos que el publicador sube desde `/publicar`.**
@@ -115,29 +151,24 @@ Reglas:
 3. `tools/preparar_conjunto.py --hf hf-vision/chest-xray-pneumonia --split test --por-clase 100
    --salida ./tmp/torax-rx/v1`: baja 100 por clase, convierte a PNG, renombra a UUID, escribe
    `verdad.jsonl` y `manifiesto.json` con el hash del contenido.
-4. Subida por la consola de S3 a `ateneo-evaluacion/torax-rx/v1/` (§04 de la guía), o
-   `tools/subir_conjunto.py` para conjuntos chicos y para el desarrollo local.
-5. Lanzar `eval-1` desde `lt-eval` con el user data del evaluador (§9.5 de la guía).
+4. Subida por la consola de S3 a `ateneo-evaluacion-<sufijo>/torax-rx/v1/`, o
+   `tools/subir_conjunto.py` para conjuntos chicos y para el desarrollo local. El evaluador no
+   hay que prenderlo: arranca solo cuando llega una evaluación.
 
 ### 5.2 Subir un modelo, publicarlo y evaluarlo
 
 ```
-Navegador              Backend (app)          S3 modelos        Postgres          eval-1 (evaluador)      S3 evaluación
-   │ POST /api/modelos/subidas ────►│ list prefijo (409 si existe)            │                          │
-   │ ◄── 201 {prefix, subida}       │                     │                  │                          │
-   │ POST modelo.onnx (form prefirmado) ──────────────────►│                  │                          │
-   │ POST /api/modelos/publicar ───►│ valida contrato     │                  │                          │
-   │      {nombre, version, contrato}│ head modelo.onnx ─►│                  │                          │
-   │                                │ put modelo.json ───►│                  │                          │
-   │                                │ upsert modelo pendiente ──────────────►│                          │
-   │ ◄── 202 {modelo_id}            │                     │                  │   poll 10 s              │
-   │                                │                     │                  │◄─ SELECT … SKIP LOCKED ──│
-   │                                │                     │◄──── GET modelo.onnx + modelo.json ─────────│
-   │                                │                     │                  │   GET manifiesto/verdad/casos ─►│ (por vpce)
-   │                                │                     │                  │   inferir 200 casos      │
-   │                                │                     │                  │◄─ UPDATE ok, metricas ───│
-   │ GET /api/modelos/{id} (polling 3 s) ─►│ ────────────────────────────────►│                          │
-   │ ◄── {estado_evaluacion, accuracy, metricas}                             │                          │
+navegador ─ POST /api/modelos/subidas ─────► api: reserva modelos/<nombre>/<version>/ (409 si existe), firma la subida
+navegador ─ POST prefirmado (modelo.onnx) ─► S3 modelos
+navegador ─ POST /api/modelos/publicar ────► api: valida el contrato, confirma que llegó el ONNX, escribe modelo.json,
+                                                  fila `pendiente` en Postgres, mensaje a `evaluaciones` ─► 202
+evaluaciones ──► evaluador (pasa de 0 a 1 tarea, subred aislada)
+                   ├─ baja modelo.onnx y modelo.json de S3 modelos
+                   ├─ lee manifiesto, verdad y casos de S3 evaluación, solo por el endpoint de la VPC
+                   ├─ infiere los 200 casos con ateneo_ml y calcula las métricas
+                   └─ publica en `resultados`: `en_curso`, después `ok` con el agregado (o `error`)
+resultados ────► procesador: actualiza la fila del modelo (el único que escribe resultados)
+navegador ─ GET /api/publico/modelos/{id} cada 3 s ─► api ─► la fila: estado, accuracy, métricas
 ```
 
 1. El publicador elige el `.onnx` y su contrato (o lo escribe en la pantalla, que trae una
@@ -147,50 +178,50 @@ Navegador              Backend (app)          S3 modelos        Postgres        
 2. **Subir y publicar** termina con `POST /api/modelos/publicar` llevando el contrato. El backend
    lo valida (§7), confirma con `head_object` que el ONNX llegó, escribe el `modelo.json` al lado
    e inserta o actualiza la fila con `estado_evaluacion = pendiente`, borrando métricas anteriores.
-   Responde `202`. Sobre un modelo que ya está en el bucket, el mismo pedido sin `contrato` lo
-   vuelve a encolar leyendo el `modelo.json` que ya existe.
-3. El evaluador en `eval-1` toma la fila, baja el modelo, lee manifiesto, verdad y casos de la
-   versión más reciente de `torax-rx/` por el endpoint de la VPC, infiere cada caso con
-   `ateneo_ml`, calcula métricas y actualiza la fila: `estado_evaluacion = ok`, `accuracy`,
-   `metricas`, `conjunto`, `conjunto_version`, `manifiesto`, `evaluador_id`, `evaluado_en`.
-   Si algo falla: `error` con el mensaje.
+   Deja el pedido en la cola `evaluaciones` y responde `202`. Sobre un modelo que ya está en el
+   bucket, el mismo pedido sin `contrato` lo vuelve a encolar leyendo el `modelo.json` que ya existe.
+3. El evaluador toma el mensaje (si no había ninguna tarea corriendo, el servicio pasa de 0 a 1 y
+   tarda uno o dos minutos), baja el modelo, lee manifiesto, verdad y casos de la versión más
+   reciente de `<tipo_estudio>/` por el endpoint de la VPC, infiere cada caso con `ateneo_ml`,
+   calcula métricas y publica solo el agregado en `resultados`. El procesador actualiza la fila:
+   `estado_evaluacion = ok`, `accuracy`, `metricas`, `conjunto`, `conjunto_version`, `manifiesto`,
+   `evaluador_id` (la tarea de ECS), `evaluado_en`. Si algo falla: `error` con el mensaje.
 4. La UI hace polling y la tarjeta del modelo pasa de "Evaluando…" a la accuracy con el resto de
    las métricas. **Los casos nunca salen de la subred; lo que sale es un número.**
 
 ### 5.3 Inferir una imagen (asíncrono)
 
 ```
-Navegador              Backend (API)        Postgres      Backend (despachador)     ALB int → Worker     S3
-   │ POST /api/estudios ─►│                    │                  │                       │             │
-   │ ◄── {estudio_id, subida: {url, campos}}   │                  │                       │             │
-   │ POST archivo (form prefirmado) ───────────────────────────────────────────────────────────────────►│
-   │ POST /api/inferencias ─►│ head_object ─────────────────────────────────────────────────────────────►│
-   │                      │ INSERT trabajo pendiente ─►│          │                       │             │
-   │ ◄── 202 {trabajo_id} │                    │                  │                       │             │
-   │                      │                    │◄─ SELECT pendiente SKIP LOCKED ─│         │             │
-   │                      │                    │── en_curso ─────►│                       │             │
-   │                      │                    │                  │── POST /inferir ─────►│             │
-   │                      │                    │                  │                       │◄─ GET ──────│
-   │                      │                    │                  │◄── {prediccion, …} ───│             │
-   │                      │                    │◄─ UPDATE ok ─────│                       │             │
-   │ GET /api/trabajos/{id} (polling 1,5 s) ─►│                  │                       │             │
-   │ ◄── {estado, resultado, worker_id}        │                  │                       │             │
+navegador ─ POST /api/estudios ─────► api: fila `estudio` + POST prefirmado
+navegador ─ POST prefirmado ────────► S3 estudios (la imagen no pasa por la api)
+navegador ─ POST /api/inferencias ──► api: confirma la subida, verifica el tipo de estudio,
+                                           fila `trabajo` en `pendiente`, mensaje a `inferencias` ─► 202
+inferencias ──► worker (sin puertos de entrada, sin base, sin internet)
+                  ├─ publica `en_curso` en `resultados`
+                  ├─ baja el modelo (caché en EFS) y el estudio (S3, por el endpoint)
+                  ├─ infiere con ateneo_ml
+                  └─ publica `ok` con la predicción (o `error`) y recién ahí borra el mensaje
+resultados ───► procesador: actualiza la fila del trabajo
+navegador ─ GET /api/trabajos/{id} cada 1,5 s ─► api ─► la fila: estado, resultado, worker, duración
 ```
 
-1. El usuario elige un modelo publicado y arrastra una imagen.
+1. El usuario abre la ficha de un modelo publicado y arrastra una imagen.
 2. `POST /api/estudios` valida MIME y tamaño (≤ 20 MB) y devuelve un `presigned POST` con
    `content-length-range`. El navegador sube directo a S3.
-3. `POST /api/inferencias {estudio_id, modelo_id}`: el backend confirma la subida con `head_object`,
-   verifica que el tipo de estudio coincide, inserta `trabajo` en `pendiente` y responde `202`.
-4. El **despachador** (una tarea de fondo en cada proceso del backend, cada 1 s) toma trabajos
-   `pendiente` con `SKIP LOCKED` (varias instancias del backend compiten sin pisarse), los marca
-   `en_curso`, llama `POST {INFERENCIA_URL}/inferir` con timeout de 30 s y:
-   - si responde: guarda `resultado`, `worker_id`, `duracion_ms`, estado `ok`;
-   - si hay timeout o error: vuelve a `pendiente` con `intentos + 1`; con 3 intentos pasa a
-     `error` y guarda el motivo.
+3. `POST /api/inferencias {estudio_id, modelo_id}`: la api confirma la subida con `head_object`,
+   verifica que el tipo de estudio coincide, inserta `trabajo` en `pendiente`, deja el pedido en
+   la cola `inferencias` y responde `202`. Si SQS no contesta, el trabajo queda `pendiente` y el
+   reenviador del procesador lo vuelve a mandar a los 10 minutos.
+4. El **worker** toma el mensaje, publica `en_curso` en `resultados`, infiere y publica el
+   resultado; recién entonces borra el mensaje. Un error definitivo (imagen ilegible, modelo
+   incompatible, objeto inexistente) se publica y el mensaje se borra. Uno transitorio devuelve el
+   mensaje a la cola en 10 s; al tercer intento se publica el error y SQS pasa el mensaje a la cola
+   de fallidos, que dispara la alarma por SNS. Si el worker muere a mitad, el mensaje reaparece al
+   vencer la visibilidad (2 min). El **procesador** aplica cada resultado solo si el trabajo sigue
+   `pendiente` o `en_curso`: una entrega repetida de SQS no cambia nada.
 5. La UI hace polling de `GET /api/trabajos/{id}` y muestra la etiqueta predicha, las
-   probabilidades por clase, el worker que atendió (hostname, prueba 4 de la demo), la duración y
-   la cantidad de intentos.
+   probabilidades por clase, el worker que atendió (el hostname de la tarea), la duración y la
+   cantidad de intentos.
 
 ### 5.4 Consultar a una junta de modelos
 
@@ -222,31 +253,39 @@ y las métricas de cada modelo.
 ## 6. API del backend
 
 Prefijo `/api`. JSON en UTF-8. Errores con `{ "error": "codigo", "detalle": "texto" }`.
-Todo lo que no es `/api/*` ni `/health` lo sirve el sitio estático; un `404` fuera de `/api`
-devuelve `index.html` (rutas del lado del cliente).
 
-| Método y ruta | Cuerpo | Respuesta | Errores |
-|---------------|--------|-----------|---------|
-| `GET /health` | — | `{"ok": true}` (sin base; lo usa el ALB) | — |
-| `GET /api/health` | — | `{"ok": true, "instancia": "ip-10-0-10-23"}` | — |
-| `GET /api/modelos/disponibles` | — | `[{nombre, version, tipo_estudio, publicado: bool, modelo_id?}]` (lista prefijos `modelos/*/*/modelo.json` en S3) | — |
-| `POST /api/modelos/subidas` | `{nombre, version, tamano_bytes}` | `201 {prefix, subida: {url, campos}}` | `409` ese prefijo ya tiene algo · `422` tamaño fuera de rango (máx. 512 MB) |
-| `POST /api/modelos/publicar` | `{nombre, version, contrato?}` | `202 Modelo` (estado `pendiente`) | `404` no llegó el `modelo.onnx` (o no hay `modelo.json` en S3, sin `contrato`) · `422` contrato inválido · `409` ya está `pendiente` o `en_curso` |
-| `GET /api/modelos` | — | `[Modelo]` publicados, orden `creado desc` | — |
-| `GET /api/modelos/{id}` | — | `Modelo` | `404` |
-| `POST /api/estudios` | `{tipo_estudio, nombre_archivo, content_type, tamano_bytes}` | `201 {estudio_id, subida: {url, campos}}` | `422` MIME o tamaño no permitido |
-| `POST /api/inferencias` | `{estudio_id, modelo_id}` | `202 Trabajo` (estado `pendiente`) | `404` · `409` estudio no subido · `422` tipo de estudio distinto |
-| `GET /api/trabajos/{id}` | — | `Trabajo` | `404` |
-| `POST /api/consultas` | `{estudio_id, modelo_ids}` (de 2 a 5) | `202 Consulta` (estado `en_cola`, un trabajo `pendiente` por modelo) | `404` · `409` estudio no subido o modelo sin evaluación `ok` · `422` menos de 2 o más de 5, repetidos, otro tipo de estudio u otras etiquetas |
-| `GET /api/consultas/{id}` | — | `Consulta` con cada modelo y, al terminar, el consenso | `404` |
-| `GET /api/cuenta/tipo` | — | `{tipo, grupos}`: los grupos que la cuenta tiene en Cognito ahora, que pueden no ser los del token, y el tipo que les corresponde (`null` si todavía no eligió, o si es de médico o de admin) | `502` Cognito no contestó |
-| `POST /api/cuenta/tipo` | `{tipo}`: `institucion` o `publicador` | `200 {tipo, grupo}`: el grupo de Cognito en el que quedó la cuenta; para usarlo hay que volver a ingresar | `409` la cuenta ya tiene otro tipo, en Cognito o elegido antes (y siempre sin Cognito) · `422` cualquier otro tipo: médico y admin no se eligen · `502` Cognito no contestó |
+En AWS todo entra por API Gateway, que exige un access token de Cognito válido en todo `/api/*`
+salvo `/api/health` y `/api/publico/*`; el backend lo vuelve a validar y responde `401
+no_autenticado` si falta o no sirve. En local no hay Cognito y todos son anónimos; ahí la api
+también sirve el sitio: lo que no es `/api/*` ni `/health` es el sitio estático, y un `404` fuera
+de `/api` devuelve `index.html` (rutas del lado del cliente).
+
+| Método y ruta | Token | Cuerpo | Respuesta | Errores |
+|---------------|-------|--------|-----------|---------|
+| `GET /health` | — | — | `{"ok": true}` (sin base; lo usa el ALB, no pasa por API Gateway) | — |
+| `GET /api/health` | no | — | `{"ok": true, "instancia": "<hostname de la tarea>"}` | — |
+| `GET /api/publico/modelos` | no | — | `[Modelo]` publicados, orden `creado desc` | — |
+| `GET /api/publico/modelos/{id}` | no | — | `Modelo` | `404` |
+| `GET /api/publico/demo` | no | — | estado de la preparación de la demo: global, cantidades y estado de cada modelo inicial | — |
+| `GET /api/modelos/disponibles` | sí | — | `[{nombre, version, tipo_estudio, publicado: bool, modelo_id?}]` (lista prefijos `modelos/*/*/modelo.json` en S3) | — |
+| `POST /api/modelos/subidas` | sí | `{nombre, version, tamano_bytes}` | `201 {prefix, subida: {url, campos}}` | `409` ese prefijo ya tiene algo · `422` tamaño fuera de rango (máx. 512 MB) |
+| `POST /api/modelos/publicar` | sí | `{nombre, version, contrato?}` | `202 Modelo` (estado `pendiente`) | `404` no llegó el `modelo.onnx` (o no hay `modelo.json` en S3, sin `contrato`) · `422` contrato inválido · `409` ya está `pendiente` o `en_curso` |
+| `POST /api/estudios` | sí | `{tipo_estudio, nombre_archivo, content_type, tamano_bytes}` | `201 {estudio_id, subida: {url, campos}}` | `422` MIME o tamaño no permitido |
+| `POST /api/inferencias` | sí | `{estudio_id, modelo_id}` | `202 Trabajo` (estado `pendiente`) | `404` · `409` estudio no subido · `422` tipo de estudio distinto |
+| `GET /api/trabajos/{id}` | sí | — | `Trabajo` | `404` |
+| `POST /api/consultas` | sí | `{estudio_id, modelo_ids}` (de 2 a 5) | `202 Consulta` (estado `en_cola`, un trabajo `pendiente` por modelo) | `404` · `409` estudio no subido o modelo sin evaluación `ok` · `422` menos de 2 o más de 5, repetidos, otro tipo de estudio u otras etiquetas |
+| `GET /api/consultas/{id}` | sí | — | `Consulta` con cada modelo y, al terminar, el consenso | `404` |
+| `GET /api/cuenta/tipo` | sí | — | `{tipo, grupos}`: los grupos que la cuenta tiene en Cognito ahora, que pueden no ser los del token, y el tipo que les corresponde (`null` si todavía no eligió, o si es de médico o de admin) | `502` Cognito no contestó |
+| `POST /api/cuenta/tipo` | sí | `{tipo}`: `institucion` o `publicador` | `200 {tipo, grupo}`: el grupo de Cognito en el que quedó la cuenta; para usarlo hay que volver a ingresar | `409` la cuenta ya tiene otro tipo, en Cognito o elegido antes (y siempre sin Cognito) · `422` cualquier otro tipo: médico y admin no se eligen · `502` Cognito no contestó |
+
+El catálogo vive bajo `/api/publico/` porque es el único prefijo que API Gateway deja pasar sin
+token: nada que cuelgue de ahí pide identidad ni depende de quién pregunta.
 
 Esquemas:
 
 ```jsonc
 // Modelo
-{ "id": "uuid", "nombre": "torax-rx-efficientnetb0", "version": "1.0.0",
+{ "id": "uuid", "nombre": "torax-rx-efficientnet-b0", "version": "1.0.0",
   "tipo_estudio": "torax-rx", "tarea": "clasificacion",
   "etiquetas": ["NORMAL", "PNEUMONIA"],
   "estado_evaluacion": "ok",                 // pendiente | en_curso | ok | error
@@ -258,8 +297,10 @@ Esquemas:
                                       "valores": [[92,8],[2,98]] } },
   "conjunto": "torax-rx", "conjunto_version": "v1",
   "manifiesto": { "casos": 200, "congelado_en": "2026-09-10", "hash": "sha256:…" },
-  "evaluador_id": "i-0abc…", "evaluado_en": "…", "error": null,
-  "creado": "…", "publicado": "…" }
+  "evaluador_id": "tarea-…", "evaluado_en": "…", "error": null,
+  "creado": "…", "publicado": "…",
+  "nombre_visible": "EfficientNet-B0 · Neumonía",   // solo los modelos iniciales de la demo
+  "predeterminado": true }
 
 // Trabajo
 { "id": "uuid", "estudio_id": "uuid", "modelo_id": "uuid",
@@ -285,15 +326,31 @@ Esquemas:
       "coincide": true } ] }                 // null mientras no hay consenso
 ```
 
-### API del worker (interna, puerto 8081, solo desde `sg-alb-int`)
+### Los mensajes de las colas
 
-| Método y ruta | Cuerpo | Respuesta |
-|---------------|--------|-----------|
-| `GET /health` | — | `{"ok": true}` |
-| `POST /inferir` | `{trabajo_id, modelo: {nombre, version, bucket, prefix}, estudio: {bucket, key}}` | `{trabajo_id, worker, prediccion, probabilidades, duracion_ms}` |
+El worker y el evaluador no tienen API: leen su cola y publican en `resultados`.
 
-El worker es idempotente por construcción: misma entrada, misma salida, no escribe nada.
-`400` si el contrato no se puede aplicar a la imagen; `404` si falta el objeto en S3.
+```jsonc
+// inferencias: lo publica la api (y el reenviador del procesador, si el envío falló)
+{ "trabajo_id": "uuid",
+  "modelo": { "nombre", "version", "bucket", "prefix" },
+  "estudio": { "bucket", "key" } }
+
+// evaluaciones: lo publica la api al publicar un modelo (y el procesador, con datos_demo)
+{ "tipo": "evaluar_modelo", "modelo_id", "nombre", "version", "tipo_estudio", "prefix", "etiquetas" }
+
+// resultados: lo publican worker y evaluador; lo consume el procesador
+{ "tipo": "inferencia", "trabajo_id", "estado": "en_curso", "worker", "intento" }
+{ "tipo": "inferencia", "trabajo_id", "estado": "ok", "worker", "prediccion", "probabilidades", "duracion_ms" }
+{ "tipo": "inferencia", "trabajo_id", "estado": "error", "error" }
+{ "tipo": "evaluacion", "modelo_id", "estado": "en_curso", "evaluador" }
+{ "tipo": "evaluacion", "modelo_id", "estado": "ok", "evaluador", "metricas", "conjunto",
+  "conjunto_version", "manifiesto", "terminado" }
+{ "tipo": "evaluacion", "modelo_id", "estado": "error", "evaluador", "error" }
+```
+
+Worker y evaluador no escriben en la base. El procesador aplica cada resultado solo si el registro
+sigue `pendiente` o `en_curso`, así que un mensaje repetido o tardío no cambia nada.
 
 ### Quién puede llamar a cada ruta (Entrega 4)
 
@@ -304,7 +361,7 @@ Con Cognito, cada ruta de `/api` salvo `/api/publico/*` y `/api/health` pide el 
 | Rutas | Cuentas |
 |-------|---------|
 | `/api/modelos/disponibles` · `/api/modelos/subidas` · `/api/modelos/publicar` | publicador · admin de plataforma |
-| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` | médico · admin de institución · admin de plataforma |
+| `POST /api/estudios` · `POST /api/inferencias` · `GET /api/trabajos/{id}` · `POST /api/consultas` · `GET /api/consultas/{id}` | médico · admin de institución · admin de plataforma |
 | `GET` y `POST /api/cuenta/tipo` | cualquier cuenta con token, también sin grupo: es cómo consigue uno |
 | `/api/publico/*` · `/api/health` | cualquiera, sin token |
 
@@ -410,11 +467,16 @@ torax-rx/v1/casos/<uuid>.png
 
 El evaluador verifica que las líneas de `verdad.jsonl` coinciden con `casos` del manifiesto y con
 los objetos bajo `casos/`, y que cada etiqueta está en las del modelo. Si no, la evaluación termina
-en `error` sin correr nada. La versión a usar es la mayor `vN` que exista bajo `torax-rx/`.
+en `error` sin correr nada. La versión a usar es la mayor `vN` que exista bajo `<tipo_estudio>/`
+(hoy `torax-rx/` y `cerebro-rm/`).
 
 ## 9. Esquema de la base
 
-`migraciones/001_inicial.sql`, aplicado con `psql` desde una instancia de la capa app.
+`migraciones/001_inicial.sql`. Las migraciones las aplica el procesador al arrancar, con un candado
+de la base para que dos tareas no lo hagan a la vez. `002_procesador.sql` agrega
+`modelo.actualizado` (para vencer las evaluaciones que quedaron sin noticias) y `003_demo.sql`, la
+tabla `demo_inicializacion` (la outbox con la que el procesador encola la evaluación de los
+modelos de la demo).
 
 ```sql
 create table modelo (
@@ -426,7 +488,7 @@ create table modelo (
   etiquetas          jsonb not null,
   s3_prefix          text not null,           -- modelos/<nombre>/<version>/
   contrato           jsonb not null,          -- copia de modelo.json al publicar
-  -- evaluación (la escribe eval-1)
+  -- evaluación (la escribe el procesador, con lo que publica el evaluador)
   estado_evaluacion  text not null check (estado_evaluacion in ('pendiente','en_curso','ok','error')),
   accuracy           numeric(5,4),
   metricas           jsonb,
@@ -452,7 +514,7 @@ create table estudio (
   creado        timestamptz not null default now()
 );
 
-create table trabajo (                        -- la "cola", tal cual la guía §12
+create table trabajo (                        -- el estado de cada inferencia; la cola es SQS
   id            uuid primary key default gen_random_uuid(),
   estudio_id    uuid not null references estudio(id),
   modelo_id     uuid not null references modelo(id),
@@ -500,7 +562,7 @@ create table cuenta (
 
 ## 10. Métricas de evaluación
 
-Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen dorada no trae scikit-learn).
+Calculadas en `ateneo_ml.metricas` solo con NumPy (la imagen `ml` no trae scikit-learn).
 
 - Siempre: `n_casos`, `accuracy`, `matriz_confusion`, `duracion_s`, `casos_con_error`.
 - Binaria (este modelo, porque declara `positiva`): `sensibilidad`, `especificidad`, `precision`,
@@ -512,58 +574,58 @@ de los casos falla, la evaluación termina en `error`.
 
 ## 11. Requisitos no funcionales
 
-| Requisito (guía §12) | Cómo |
-|----------------------|------|
-| Instancias sin estado | Nada en disco local salvo la caché de modelos en EFS (worker), la copia del sitio estático (app, se rehace al nacer) y un directorio temporal del evaluador que se borra al terminar cada evaluación. |
-| Configuración por entorno | `pydantic-settings` lee `/etc/ateneo.env` vía `EnvironmentFile`. Sin IP ni nombres fijos. |
-| Sin credenciales de AWS en el código | `boto3` sin argumentos. Local: `AWS_ENDPOINT_URL` apunta a MinIO. |
-| `GET /health` rápido y sin base | Backend y worker. |
-| Logs a stdout | JSON por línea con `trabajo_id` / `modelo_id`. |
-| Timeouts explícitos | Despachador → worker 30 s; S3 `connect 5 s / read 15 s`; evaluador loguea progreso cada 25 casos. |
+| Requisito | Cómo |
+|-----------|------|
+| Tareas sin estado | Nada en disco salvo la caché de modelos en EFS (worker) y un directorio temporal del evaluador que se borra al terminar cada evaluación. ECS reemplaza tareas sin aviso. |
+| Configuración por entorno | `pydantic-settings` lee las variables que Terraform escribe en cada definición de tarea; `DATABASE_URL` la inyecta ECS desde Secrets Manager, solo a api y procesador. Sin IP ni nombres fijos. |
+| Sin credenciales de AWS en el código | `boto3` sin argumentos: en AWS, el rol de la tarea. En local, `AWS_ENDPOINT_URL_*` apunta a MinIO y a ElasticMQ. |
+| `GET /health` rápido y sin base | En la api: es el health check del ALB. |
+| Logs a stdout | Una línea por evento con `trabajo_id` / `modelo_id`; ECS los manda a CloudWatch Logs (`/ecs/ateneo/<servicio>`, 7 días). |
+| Timeouts explícitos | S3 `connect 5 s / read 15 s` (30 s en el evaluador); long polling de 20 s en las colas; el evaluador loguea el progreso cada 25 casos. |
 | Tiempo en UTC | Todo `timestamptz`; el frontend convierte. |
-| Límites de entrada | Imagen ≤ 20 MB, MIME `image/png` o `image/jpeg`. |
-| Rutas del cliente | `404` fuera de `/api` → `index.html` (guía §10). |
-| Sin autenticación | Punto de extensión `Depends(usuario_actual)`, hoy anónimo. |
+| Límites de entrada | Imagen ≤ 20 MB, MIME `image/png` o `image/jpeg`; modelo ≤ 512 MB. |
+| Rutas del cliente | El bucket web devuelve `index.html` como documento de error; en local lo hace la api. |
+| Autenticación | Cognito. API Gateway valida el access token en todo `/api/*` salvo `/api/health` y `/api/publico/*`, y el backend lo vuelve a validar (`Depends(usuario_actual)`). |
 | Permisos por rol y por autoría | Cada router pide los grupos de Cognito que admite (`403`); un estudio o un trabajo ajeno da `404`. Ver §6, «Quién puede llamar a cada ruta». |
 
 ## 12. Pantallas
 
-Tres vistas servidas en `http://<alb>/`, con ruteo del lado del cliente (`/`, `/publicar`,
-`/consulta`; un `404` fuera de `/api` devuelve `index.html`). Una por público: la portada explica,
-publicación es de quien sube modelos, consulta es de quien atiende.
+Cinco vistas con ruteo del lado del cliente: `/`, `/modelos`, `/modelos/<id>`, `/junta` y
+`/publicar` (`/consulta`, de la versión anterior, cae en el catálogo), más la pantalla del tipo de
+cuenta, que no tiene ruta propia. En AWS el sitio lo sirve S3 por HTTP y los datos van a API
+Gateway por HTTPS. Portada, catálogo y fichas son públicos; analizar un estudio, la junta y
+publicar piden sesión y la cuenta que corresponde: con otra, la vista dice por qué no y qué puede
+hacer esa cuenta.
 
-**Portada (`/`)** — qué es Ateneo, el recorrido de un modelo (publicar → medir aislado → catálogo →
-consultar), las dos puertas y lo que el pre-MVP todavía no hace. Muestra en vivo cuántos modelos
-hay publicados, cuántos evaluados, la mejor accuracy y cuántos esperan en el bucket.
+**Portada (`/`)** — qué es Ateneo, los modelos incluidos (los cinco de la demo, con el mejor de
+cada tipo marcado), cómo funciona en tres pasos y la invitación a publicar uno propio. Muestra en
+vivo cuántos modelos hay, cuántos están listos para usar, cuántos tipos de estudio y la mejor
+accuracy.
 
-**Publicación (`/publicar`)**
+**Catálogo (`/modelos`)** — tarjetas de los modelos publicados, filtrables por tipo de estudio, de a
+nueve por página; los evaluados primero, del mejor al peor. Cada tarjeta lleva a su ficha.
+
+**Ficha (`/modelos/<id>`)**
+- **El rendimiento**: la `accuracy`, las métricas secundarias, la matriz de confusión, los casos,
+  el conjunto y su versión, el hash del manifiesto, el evaluador y la fecha. Mientras se evalúa,
+  el estado («En cola», «Evaluando…»), y la ficha se actualiza sola cada 4 s.
+- **Analizar un estudio** (con sesión): zona de arrastre con vista previa local, «Subiendo» → «En
+  cola» → «Procesando» → la etiqueta predicha con las barras de probabilidad por clase, la
+  duración y el worker que atendió. Cierra con el aviso de que no reemplaza el criterio clínico y
+  de que el estudio se borra a los 7 días. Sin sesión, pide ingresar o crear una cuenta.
+
+**Publicar (`/publicar`)** (con sesión)
 - **Subir un modelo**: zona de arrastre para el `.onnx` y su `modelo.json` (los dos de una, o el
   ONNX y el contrato escrito en el editor, que trae plantilla). Debajo, lo leído del contrato
   —tipo de estudio, tarea, etiquetas— y el destino `modelos/<nombre>/<version>/`, con aviso si esa
-  versión ya existe. **Subir y publicar** muestra el progreso del archivo y después «dando de
-  alta». Al lado, qué valida el alta.
+  versión ya existe. **Subir y publicar** muestra el progreso del archivo y después sigue la
+  evaluación en vivo.
 - **En el bucket**: una fila por prefijo con `modelo.json` —nombre, versión, tipo de estudio, si ya
-  está en el catálogo— y su botón **Publicar** / **Volver a publicar**, que re-evalúa sin volver a
-  subir nada.
-- **La evaluación**: tarjeta del modelo elegido con la `accuracy` grande, métricas secundarias,
-  matriz de confusión, casos, conjunto y versión, hash del manifiesto, evaluador y fecha. Estados:
-  «Sin evaluar», «Evaluando…» (spinner y polling cada 3 s), «La evaluación falló: …». Al lado, qué
-  valida el alta y qué hace volver a publicar.
-- **El catálogo**: tabla de los publicados (modelo, tipo de estudio, evaluación, accuracy, casos,
-  conjunto, fecha) con la mejor accuracy de cada tipo marcada. Elegir una fila la muestra arriba.
+  está en el catálogo y el estado de su evaluación— con su botón **Publicar** / **Volver a
+  publicar**, que re-evalúa sin volver a subir nada.
 
-**Consulta (`/consulta`)**
-- **El modelo**: tarjetas de los modelos publicados con la accuracy a la vista; debajo, contra qué
-  se midió (sensibilidad, especificidad, casos, conjunto) y la evaluación completa desplegable.
-- **El estudio**: zona de arrastre / selector de archivo con vista previa local y botón
-  **Consultar**, habilitado con modelo elegido e imagen cargada.
-- **El resultado**: «Subiendo» → «En cola» → «Procesando» → etiqueta predicha destacada, barras de
-  probabilidad por clase, duración, worker e intentos. Cierra con el aviso de que es orientativo y
-  no reemplaza el criterio clínico.
-- Errores legibles: «El worker no respondió tras 3 intentos», «Tipo de estudio distinto».
-
-**Barra y pie**: `/api/health` con la instancia que atendió (para ver al ALB alternar) y
-alternador de tema claro / oscuro.
+**Barra y pie**: las secciones, el tema claro u oscuro, la sesión («Ingresar», o el email y
+«Salir») y el estado de la API (`/api/health`, con la tarea que atendió).
 
 **Junta (`/junta`)** — se llega desde la barra, desde el catálogo y desde la ficha de un modelo
 evaluado.
@@ -587,48 +649,63 @@ preguntar.
 
 ## 13. Criterios de aceptación
 
-Los ocho se verificaron contra el entorno local con Docker el 2026-09-07. Lo medido:
-publicación y evaluación de 200 casos en 14,4 s (accuracy 0,97, sensibilidad 0,95,
-especificidad 0,99, AUC 0,995, 0 casos ilegibles); inferencias de 59 a 292 ms; y con el worker
-apagado, el trabajo hace 3 intentos y termina en `error` sin colgar nada.
+Los criterios de la Entrega 2 (con `eval-1`, `asg-inf` y el ALB interno) se verificaron en local el
+2026-09-07: publicación y evaluación de 200 casos en 14,4 s (accuracy 0,97, sensibilidad 0,95,
+especificidad 0,99, AUC 0,995, 0 casos ilegibles), inferencias de 59 a 292 ms, y con el worker
+apagado el trabajo hacía 3 intentos y terminaba en `error` sin colgar nada.
 
+Con la arquitectura de la Entrega 3 quedan así. El despliegue del 25/10 creó toda la
+infraestructura sin errores, y en noviembre se probó a mano la integración desplegada de permisos
+y junta; aun así, **estos pasos no se recorrieron uno por uno en AWS**: son el guion del ensayo de
+la Entrega 4.
 
-1. **Subir y publicar** con el `.onnx` y su contrato deja el objeto en
-   `modelos/<nombre>/<version>/` —los dos archivos, comprobable con `aws s3 ls`— y la fila en
-   `pendiente`; con `eval-1` encendida pasa a `ok` con `accuracy` en menos de 3 min para 200 casos.
-   Volver a subir esa misma versión responde `409`.
+1. **Subir y publicar** con el `.onnx` y su contrato deja los dos archivos en
+   `modelos/<nombre>/<version>/` y la fila en `pendiente`; el evaluador arranca solo (de 0 a 1
+   tarea) y la pasa a `ok` con `accuracy` en menos de 5 min para 200 casos. Volver a subir esa
+   misma versión responde `409`.
 2. La fila del modelo dice contra qué se midió: `conjunto`, `conjunto_version`, `manifiesto.hash`
-   y `evaluador_id` poblados.
-3. Desde CloudShell, `aws s3api get-object` sobre un caso del conjunto da `AccessDenied` mientras
-   la evaluación anterior sí terminó (prueba 6 de la demo).
-4. **Consultar** con una imagen de la carpeta `Testing` devuelve `202` de inmediato y el trabajo
-   pasa a `ok` en menos de 5 s, con `worker_id` poblado.
-5. Repetir seis veces muestra al menos dos `worker_id` distintos con `asg-inf` en 2 instancias
-   (prueba 4).
-6. Con `asg-inf` en 0, el trabajo queda `pendiente` con `intentos` subiendo cada ~30 s y pasa a
-   `error` al tercero; al volver a subir el grupo, un trabajo nuevo se procesa. Nada queda colgado.
+   y `evaluador_id` (la tarea de ECS) poblados.
+3. Desde CloudShell, fuera de la VPC, `aws s3api get-object` sobre un caso del conjunto da
+   `AccessDenied`, aunque la evaluación sí terminó.
+4. **Consultar** con una imagen del tipo del modelo devuelve `202` de inmediato y el trabajo pasa a
+   `ok` en menos de 10 s, con `worker_id` poblado.
+5. Con más de 10 mensajes esperando por tarea en `inferencias` durante unos minutos, el servicio
+   `worker` suma tareas (hasta 4) y vuelve a 1 cuando la cola se vacía.
+6. Un mensaje de `inferencias` que falla tres veces termina en su cola de fallidos y la alarma
+   avisa por SNS; el trabajo queda en `error` y nada queda colgado.
 7. Volver a apretar **Publicar** sobre un modelo `en_curso` responde `409`; sobre uno `ok` lo
    re-evalúa.
-8. Toda la aplicación corre en local con `docker compose up` (Postgres + MinIO) y los cuatro
-   servicios en venv, sin credenciales de AWS.
-9. **Junta**: con los tres modelos de `torax-rx` y una radiografía, `POST /api/consultas` responde
-   `202` con tres trabajos `pendiente` y deja tres mensajes en `inferencias`; al terminar, la
-   consulta queda `completa` con el consenso, el acuerdo y la marca de revisión prioritaria si el
-   acuerdo baja del 70 %. Con un modelo caído queda `parcial` con el consenso de los otros dos.
-   Pedir una junta de 1 o de 6 modelos, o con un modelo sin evaluar, se rechaza.
-10. **Tipo de cuenta**: «Ingresar → Sign up» deja la cuenta sin grupo y el sitio pregunta el tipo.
+8. Sin token, todo `/api/*` salvo `/api/health` y `/api/publico/*` responde `401` en API Gateway.
+9. **Permisos**: con una cuenta de publicador, `POST /api/estudios` y `POST /api/consultas`
+   responden `403`; con una de institución, `POST /api/modelos/publicar` responde `403`. El
+   estudio o el trabajo de otra cuenta da `404`, y el admin de plataforma lo ve.
+10. **Junta**: con los tres modelos de `torax-rx` y una radiografía, `POST /api/consultas` responde
+    `202` con tres trabajos `pendiente` y deja tres mensajes en `inferencias`; al terminar, la
+    consulta queda `completa` con el consenso, el acuerdo y la marca de revisión prioritaria si el
+    acuerdo baja del 70 %. Con un modelo caído queda `parcial` con el consenso de los otros dos.
+    Pedir una junta de 1 o de 6 modelos, o con un modelo sin evaluar, se rechaza.
+11. **Tipo de cuenta**: «Ingresar → Sign up» deja la cuenta sin grupo y el sitio pregunta el tipo.
     Eligiendo institución, la cuenta analiza un estudio; eligiendo publicador, publica un modelo.
     Una segunda elección distinta responde `409` y la cuenta conserva la primera. Entrando después
     desde otro navegador no vuelve a preguntar. Ningún registro queda de publicador sin haberlo
     elegido.
+12. Toda la aplicación corre en local con `docker compose up` (Postgres, MinIO y ElasticMQ), sin
+    credenciales de AWS.
 
 ## 14. Fuera de alcance (evolución)
 
-- Subida del ONNX desde la web con URL prefirmada (el botón simula lo que sigue después).
-- Cola SQS en lugar de la tabla `trabajo` (riesgos 01 y 02 de la arquitectura).
 - Consenso de juntas para segmentación y detección (la de clasificación está en §5.4).
+- Permisos finos: organizaciones (que el admin de institución vea lo de sus médicos), separar lo
+  que hace el médico de lo que hace el admin de institución, cuentas pendientes de aprobación y un
+  admin de plataforma que vea solo metadatos y agregados.
+- Planes, consumo y facturación.
 - DICOM y de-identificación en origen.
-- Usuarios, planes, consumo, facturación.
-- Evaluación única y firmada por (modelo, conjunto, versión); historial de evaluaciones.
+- Conector con los sistemas del centro (PACS, HIS, FHIR).
+- Evaluación única y firmada por (modelo, conjunto, versión); historial de evaluaciones;
+  re-evaluación periódica.
 - Carga multiparte (las imágenes del pre-MVP pesan menos de 1 MB).
-- HTTPS (sin dominio ni CloudFront en el lab).
+- HTTPS en la descarga del sitio: sin dominio ni CloudFront en el lab, S3 lo sirve por HTTP. Los
+  datos y los tokens sí viajan por HTTPS, a API Gateway.
+
+Salieron de esta lista porque se implementaron: la subida del ONNX desde la web (§5.2), la cola
+SQS en lugar de la tabla `trabajo` (§5.3) y el login (§11).

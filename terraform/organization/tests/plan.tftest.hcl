@@ -263,6 +263,80 @@ run "login_de_la_clase" {
   }
 }
 
+# Que nadie deje la app sin servicio a fuerza de pedidos: API Gateway pone el total, y el WAF
+# del ALB, el tope de cada cliente (por token, y por IP en las rutas sin token).
+run "limite_por_cliente" {
+  command = apply
+
+  assert {
+    condition = { for r in aws_wafv2_web_acl.alb[0].rule : r.name => r.priority } == {
+      "por-cuenta"                         = 0
+      "por-ip"                             = 1
+      AWSManagedRulesCommonRuleSet         = 2
+      AWSManagedRulesKnownBadInputsRuleSet = 3
+      AWSManagedRulesSQLiRuleSet           = 4
+    }
+    error_message = "Los dos topes por tasa van antes que las tres reglas administradas."
+  }
+  assert {
+    condition = one([
+      for r in aws_wafv2_web_acl.alb[0].rule : r.statement[0].rate_based_statement[0].custom_key[0].header[0].name if r.name == "por-cuenta"
+    ]) == "authorization"
+    error_message = "El tope por cuenta cuenta por el encabezado Authorization."
+  }
+  assert {
+    condition = {
+      for r in aws_wafv2_web_acl.alb[0].rule : r.name => r.statement[0].rate_based_statement[0].limit if startswith(r.name, "por-")
+    } == { "por-cuenta" = 300, "por-ip" = 1200 }
+    error_message = "Los topes por defecto: 300 pedidos por minuto por cuenta y 1200 por IP."
+  }
+  # El encabezado que lee el WAF tiene que ser el que escribe API Gateway, o la regla no cuenta
+  # nada y nadie se entera.
+  assert {
+    condition = one([
+      for r in aws_wafv2_web_acl.alb[0].rule : r.statement[0].rate_based_statement[0].forwarded_ip_config[0].header_name if r.name == "por-ip"
+    ]) == "x-ip-cliente" && aws_apigatewayv2_integration.alb.request_parameters["overwrite:header.x-ip-cliente"] == "$context.identity.sourceIp"
+    error_message = "El tope por IP lee la IP del cliente del encabezado que le pone API Gateway."
+  }
+  assert {
+    condition     = aws_apigatewayv2_stage.default.default_route_settings[0].throttling_rate_limit == 500 && aws_apigatewayv2_stage.default.default_route_settings[0].throttling_burst_limit == 1000
+    error_message = "API Gateway deja pasar 500 pedidos por segundo por ruta, con ráfaga de 1000."
+  }
+  assert {
+    condition = keys(aws_cloudwatch_metric_alarm.waf_tasa) == ["por-cuenta", "por-ip"] && alltrue([
+      for a in aws_cloudwatch_metric_alarm.waf_tasa :
+      a.metric_name == "BlockedRequests" && a.dimensions.WebACL == "ateneo" && contains(a.alarm_actions, aws_sns_topic.alertas.arn) &&
+      contains([for r in aws_wafv2_web_acl.alb[0].rule : r.visibility_config[0].metric_name], a.dimensions.Rule)
+    ])
+    error_message = "Una alarma por tope, sobre la métrica de su regla, que avisa por SNS."
+  }
+}
+
+# En la demo se baja el tope para mostrarlo andando: tiene que llegar a la regla.
+run "limites_cambiados" {
+  command = apply
+  variables {
+    waf_pedidos_por_cuenta  = 20
+    api_pedidos_por_segundo = 100
+    api_rafaga              = 200
+  }
+
+  assert {
+    condition = one([
+      for r in aws_wafv2_web_acl.alb[0].rule : r.statement[0].rate_based_statement[0].limit if r.name == "por-cuenta"
+    ]) == 20 && aws_apigatewayv2_stage.default.default_route_settings[0].throttling_rate_limit == 100
+    error_message = "Los límites salen de las variables."
+  }
+}
+
+run "tope_por_debajo_del_minimo" {
+  command = plan
+  variables {
+    waf_pedidos_por_cuenta = 5
+  }
+  expect_failures = [var.waf_pedidos_por_cuenta]
+}
+
 run "sin_waf_con_admin" {
   command = apply
   variables {
@@ -271,8 +345,8 @@ run "sin_waf_con_admin" {
   }
 
   assert {
-    condition     = length(aws_wafv2_web_acl.alb) == 0 && length(aws_wafv2_web_acl_association.alb) == 0
-    error_message = "waf_activo = false apaga el WAF."
+    condition     = length(aws_wafv2_web_acl.alb) == 0 && length(aws_wafv2_web_acl_association.alb) == 0 && length(aws_cloudwatch_metric_alarm.waf_tasa) == 0
+    error_message = "waf_activo = false apaga el WAF y sus alarmas."
   }
   assert {
     condition     = length(aws_cognito_user_in_group.admin) == 1 && aws_cognito_user_in_group.admin[0].group_name == "admin_plataforma"

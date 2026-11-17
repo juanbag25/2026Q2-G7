@@ -21,6 +21,7 @@ sobre `terraform/modules`).
 | Endpoint Gateway de S3 y cuatro de interfaz (`ecr.api`, `ecr.dkr`, `logs`, `sqs`) en subredes propias | `red.tf`, módulo externo `vpc-endpoints` |
 | Grupos de seguridad encadenados; procesador, worker, evaluador y constructor sin entrada | `seguridad.tf` |
 | API Gateway (HTTP API, HTTPS) → VPC Link → ALB interno + WAF | `api.tf`, `balanceador.tf` |
+| Límites de pedidos: 500 por segundo por ruta en API Gateway; en el WAF, 300 por minuto por token y 1.200 por minuto por IP en las rutas sin token | `api.tf`, `balanceador.tf`, `variables.tf` |
 | El autorizador JWT en todo `/api/*` salvo `/api/health` y `/api/publico/*`, que es el catálogo que ve el Visitante | `api.tf`, `backend/app/api/rutas/publico.py` |
 | Cognito: cuatro grupos, Hosted UI con tres clientes («Ingresar» y crear cuenta de cada tipo), Lambda de post-confirmación, admin inicial | `cognito.tf` |
 | El login de la clase: sitio en S3 y Lambda en `/callback` | `cognito.tf`, `api.tf`, `lambda/` |
@@ -30,7 +31,11 @@ sobre `terraform/modules`).
 | RDS PostgreSQL 16 y su URL en Secrets Manager | `datos.tf` |
 | Cinco buckets: web (el sitio), modelos, estudios, evaluación, artefactos | `s3.tf`, `scripts/buckets.sh` |
 | EFS como caché de modelos de los workers | `efs.tf` |
-| SNS y alarmas: colas de fallidos y 5xx del ALB | `alertas.tf` |
+| SNS y alarmas: colas de fallidos, 5xx del ALB y los dos topes del WAF | `alertas.tf` |
+
+El diagrama de esta infraestructura, con los íconos oficiales de AWS, es
+[`arquitectura-aws.drawio`](../arquitectura-aws.drawio) (se abre con draw.io o en app.diagrams.net).
+Está hecho sobre estos archivos y coincide con ellos.
 
 ## Qué hace `terraform apply`
 
@@ -125,11 +130,120 @@ este, con el sitio en S3 (cambia también la decisión 11).
 - **Qué guarda el navegador.** Access e id token, una hora. Sin refresh token en la URL: al
   vencer, «Ingresar» vuelve a pasar por Cognito, que recuerda la sesión y no pide la contraseña.
 
+## Que nadie deje la app sin servicio a fuerza de pedidos
+
+El registro es abierto, y el catálogo se ve sin cuenta: cualquiera puede mandar pedidos sin parar.
+Antes había un solo límite, el de API Gateway (50 por segundo por ruta), y era uno para todos:
+cuidaba a los servidores, pero un cliente solo lo llenaba y los demás recibían `429`. El WAF
+miraba qué traía cada pedido, no cuántos mandaba cada uno. Ahora hay tres topes, en el orden en
+que los cruza un pedido:
+
+| Tope | Qué cuenta | Por defecto | Variable | Qué contesta |
+|------|------------|-------------|----------|--------------|
+| API Gateway | los pedidos de una ruta, de todos los clientes juntos | 500 por segundo, ráfaga de 1.000 | `api_pedidos_por_segundo`, `api_rafaga` | `429` de API Gateway |
+| WAF, regla `por-cuenta` | los de cada token (el encabezado `Authorization`), en todas las rutas | 300 por minuto | `waf_pedidos_por_cuenta` | `429` con `{"error": "demasiados_pedidos", "detalle": …}` |
+| WAF, regla `por-ip` | los de cada IP en las dos rutas sin token, `/api/health` y `/api/publico/*` | 1.200 por minuto | `waf_pedidos_por_ip` | el mismo `429` |
+
+Las dos reglas del WAF van antes que las tres administradas y miran el último minuto. A quien pasa
+su tope el WAF le contesta `429` hasta que su ritmo vuelve a bajar; a los demás no los toca. El
+cuerpo tiene el formato de error del backend, así que el sitio muestra el detalle. Cada regla
+tiene su alarma (`ateneo-waf-por-cuenta`, `ateneo-waf-por-ip`), que avisa por SNS en el minuto en
+que bloquea algo. Las dos cuestan USD 1 por mes cada una, prorrateado por hora: unos 7 centavos
+por día prendido.
+
+**De dónde salen los números.**
+
+- La api atiende unos 200 pedidos por segundo con sus 4 tareas de 0,5 vCPU: unos 50 por tarea en
+  rutas que consultan la base. Es una estimación; no se midió con carga.
+- El WAF está detrás de API Gateway: un pedido que el WAF bloquea ya pasó por API Gateway y gastó
+  su lugar en el límite. Si ese límite fuera el de la api, alguien que manda 200 por segundo lo
+  llenaría aunque el WAF lo esté cortando. Con 500 queda lugar para la api entera aunque alguien
+  mande 300 por segundo. La ráfaga son dos segundos a ese ritmo, la misma proporción que antes.
+- La pestaña que más pide (la de la junta, esperando resultados mientras se preparan los modelos)
+  hace unos 70 pedidos por minuto. 300 deja lugar para cuatro pestañas abiertas a la vez, y una
+  cuenta en el tope usa 5 por segundo, el 1 % del límite de API Gateway.
+- La IP se comparte: todas las pestañas detrás de un mismo NAT (un hospital, el aula) salen con
+  la misma. Una pestaña pide `/api/health` cada 10 s y, mientras se preparan los modelos, el
+  catálogo cada 5 s: unos 30 por minuto en esas rutas. 1.200 deja entrar a unas 40.
+- El WAF no acepta topes menores que 10, y el de una ruta de API Gateway no puede pasar el de la
+  cuenta (10.000 por segundo, ráfaga de 5.000): las variables lo validan en el plan.
+- AWS aplica el tope del WAF cerca del número, no exacto, y puede tardar unos 30 segundos en
+  empezar a cortar y en dejar de hacerlo.
+
+**Por qué la regla `por-cuenta` mira el token.** API Gateway reenvía el `Authorization` tal cual,
+porque la api lo vuelve a validar, y en las rutas con token ya comprobó la firma: no se puede
+inventar uno que pase. Cada valor distinto es un cliente. El encabezado se pasa a minúsculas y se
+le comprimen los espacios antes de contar, porque para la api `Bearer x` y `bearer  x` son el
+mismo token. Un pedido sin `Authorization` no tiene clave y esta regla no lo cuenta: de eso se
+ocupa la otra.
+
+**Por qué la regla `por-ip` lee un encabezado propio.** El ALB no ve la IP del cliente, ve la del
+VPC Link. Y la HTTP API no agrega `X-Forwarded-For`: según la documentación de AWS, traduce los
+`X-Forwarded-*` que llegan a un encabezado `Forwarded` estándar y le agrega su IP de salida, el
+host y el protocolo. El WAF no lee ese formato (`for=…;host=…;proto=…`; espera direcciones
+separadas por comas), y además empieza con lo que mandó el cliente, que lo puede inventar. Así
+que la integración escribe la IP con la que el cliente se conectó a API Gateway
+(`$context.identity.sourceIp`) en `x-ip-cliente`, con `overwrite`, que pisa lo que el cliente
+haya mandado en ese encabezado, y la regla lo lee con `forwarded_ip_config`. Si el encabezado no
+llegara, el WAF no aplica la regla: no corta a nadie de más.
+
+**Por qué cuenta por ruta y no por la falta de token.** Si contara solo los pedidos sin
+`Authorization`, alguien que le manda al catálogo un token inventado distinto en cada pedido no
+caería en ninguna de las dos reglas: la de token vería miles de clientes de un pedido cada uno.
+Contar por ruta lo cierra. La ruta se decodifica y se normaliza antes de comparar, para que
+`/api/%70ublico/` o `/api//publico/` no se escapen.
+
+**Lo que esto no cubre.**
+
+- **Pedidos con un token inválido a las rutas con token.** API Gateway los rechaza con `401`
+  antes del ALB, así que el WAF no los ve, y gastan del límite de su ruta. Los acota ese límite:
+  por eso es alto.
+- **Muchas cuentas o muchas IP a la vez.** Cada token y cada IP tienen su tope; quien junta
+  muchos los suma. El tope es por sesión más que por cuenta: un login nuevo da un token nuevo, que
+  empieza de cero. Crear cuentas tiene su propio freno: el registro pide confirmar el email, y
+  Cognito manda hasta 50 por día con su remitente (riesgo 08 del HTML).
+- **Un ataque distribuido de verdad.** Hace falta algo delante de API Gateway que vea cada
+  pedido: **CloudFront con WAF**, que además le daría HTTPS al sitio. El laboratorio no concede
+  CloudFront, así que queda para producción. **Shield Advanced** se descartó: cuesta USD 3.000 por
+  mes y es protección contra ataques grandes con un equipo de respuesta de AWS, sin proporción con
+  este proyecto. Shield Standard, que AWS aplica gratis a todas las cuentas, frena ataques a la
+  red, no pedidos válidos a la aplicación.
+
+**Cambiarlos en vivo.** Los cuatro números son variables, y un apply los cambia en el lugar sin
+reemplazar nada. Desde CloudShell, con el mismo `terraform.tfvars` del primer despliegue (si le
+falta `email_alertas`, el apply borra la suscripción de SNS; si le falta `email_admin`, el admin
+inicial):
+
+```bash
+bash terraform/organization/scripts/tf.sh apply -var waf_pedidos_por_ip=20
+API=$(bash terraform/organization/scripts/tf.sh output -raw api)
+for i in $(seq 600); do curl -s -o /dev/null -w '%{http_code}\n' "$API/api/publico/demo"; done | uniq -c
+```
+
+Al rato de pasar los 20 por minuto, los `200` se vuelven `429` y llega el mail de
+`ateneo-waf-por-ip`. API Gateway toma el cambio en segundos; el WAF pone en cero sus cuentas al
+cambiar un tope y puede tardar hasta un minuto en volver a cortar.
+
+Para ver el tope sin cambiarlo alcanza con mandar 20 pedidos a la vez, desde cualquier PC con
+`curl`: es como se probó el 17/11. La dirección de la api está en el resumen de `Aplicar` y en el
+`config.json` del sitio.
+
+```bash
+seq 6000 | xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$API/api/publico/demo" | sort | uniq -c
+```
+
 ## Correcciones respecto de la Entrega 2
 
-La devolución formal de la E2 todavía no llegó. Lo que sigue son las ocho inconsistencias que
-encontramos nosotros auditando la entrega anterior antes de diseñar la 2.0, y qué las corrige en
-este código. Cuando llegue la devolución se agrega acá lo que falte.
+La devolución de la E2 llegó el 16/10 con tres correcciones. Las tres están implementadas:
+
+| Lo que pidió la cátedra | Cómo quedó | Dónde |
+|-------------------------|------------|-------|
+| Servir el frontend estático directo, no por el balanceador | El bucket web es un sitio estático que el navegador abre sin nada en el medio; la api atiende solo `/api` | `s3.tf`, `ecs.tf` (`WEB_DIR=/sin-sitio`) |
+| Guardar cifrado lo que se guarde en un bucket | No queda ninguna credencial en ningún bucket: la URL de la base vive en Secrets Manager y ECS la inyecta solo a api y procesador. Los cinco buckets llevan SSE-S3 declarado en el código, y las colas, el cifrado de SQS | `datos.tf`, `s3.tf`, `modules/cola/` |
+| Justificar bien el uso de EFS | Es la caché de modelos compartida por los workers: una tarea nueva monta y ya tiene los modelos, sin volver a bajarlos de S3. Cifrado en reposo y en tránsito, montable solo desde el grupo del worker; el evaluador no lo monta | `efs.tf`, `ecs.tf`, `seguridad.tf` |
+
+Antes de que llegara, auditamos la entrega anterior y encontramos ocho inconsistencias más. Esto
+las corrige:
 
 | # | Qué estaba mal en la E2 | Qué lo corrige |
 |---|-------------------------|----------------|
@@ -138,7 +252,7 @@ este código. Cuando llegue la devolución se agrega acá lo que falte.
 | 3 | `generar-env.sh` escribía el usuario `ateneo`, y en la cuenta era `atenteo` | No hay más scripts de entorno a mano: `terraform apply` arma todo y los nombres salen de `locals.tf` y del sufijo guardado en el estado, nunca escritos dos veces |
 | 4 | `apagar.sh` no borraba los ALB, que siguieron cobrando | `terraform destroy` borra lo que creó, balanceador incluido, y `destruir.yml` lo corre desde el pipeline |
 | 5 | En la cuenta, `inf-b` y `data-b` colgaban de la tabla de ruteo principal | Una tabla de ruteo por capa y una asociación explícita por subred (`red.tf`): ninguna subred queda en la principal por omisión |
-| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; RDS es Single-AZ y no tiene standby; el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo se rehace sobre este código |
+| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; RDS es Single-AZ y no tiene standby; el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo, `arquitectura-aws.drawio`, está hecho sobre este código |
 | 7 | El artifact de arquitectura decía «cuatro buckets» y eran cinco | Cinco, enumerados arriba y en `local.buckets`: web, modelos, estudios, evaluación y artefactos |
 | 8 | La AMI dorada no era reproducible desde el repositorio | No hay más AMI dorada: las dos imágenes se construyen dentro de la cuenta a partir del código del repositorio y la etiqueta es su hash (`imagenes.tf`). Mismo commit, misma imagen |
 
@@ -153,24 +267,48 @@ este código. Cuando llegue la devolución se agrega acá lo que falte.
   apply llama a `scripts/buckets.sh`, que crea lo que falte y al destruir vacía y borra; todo el
   resto de la configuración de cada bucket la sigue administrando Terraform. Por eso el apply
   necesita el `aws` CLI en la máquina, igual que para esperar las imágenes.
-- **Sin CloudFront ni dominio propio.** El HTTPS lo pone API Gateway; el sitio es HTTP.
+- **Sin CloudFront ni dominio propio.** El HTTPS lo pone API Gateway; el sitio es HTTP. Y el WAF
+  va en el ALB, detrás de API Gateway, porque a una HTTP API no se le puede asociar uno: lo que
+  bloquea ya gastó del límite de API Gateway (ver arriba).
 - **RDS sin Multi-AZ**, solo `us-east-1`, sin instance refresh (ya no hay grupos de EC2).
 - **Credenciales de sesión:** se corre desde CloudShell. `scripts/tf.sh` deja el proveedor de AWS
   en `/tmp` para no llenar el giga de `$HOME`.
 
-### Lo que todavía no se probó en un Learner Lab (sección 12 del HTML)
+### Lo que ya se probó en un Learner Lab
 
-| Qué verificar | Si el lab no lo permite |
-|---------------|-------------------------|
-| VPC Link de HTTP API hacia un ALB interno | ALB público que solo acepte un encabezado secreto que agrega API Gateway |
-| Servicios de Fargate (rol vinculado de ECS) y el escalado de Application Auto Scaling | Las mismas imágenes sobre EC2 con Auto Scaling |
-| Cuota de vCPU de Fargate (todo escalado son 8,5 vCPU) | Bajar tamaños y máximos en `ecs.tf` |
-| Container Insights en el cluster (publica `RunningTaskCount`, el divisor del backlog por tarea) | `container_insights = false`: worker y procesador escalan por escalones sobre los mensajes visibles |
-| WAF asociado a un ALB | `waf_activo = false` |
-| Disparador Lambda de Cognito | Registrarse desde «Ingresar» y elegir el tipo en la app, que no depende de la Lambda |
-| Llamadas admin a Cognito desde las tareas de la api con `LabRole` (`AdminListGroupsForUser`, `AdminAddUserToGroup`), para elegir el tipo | Registrarse por «Registrate como institución / publicador», que da el grupo con la Lambda |
-| Push a ECR desde EC2 con `LabInstanceProfile` | Construir con Docker en la máquina de quien corre Terraform |
-| Bucket web público (bloqueo de acceso público a nivel de cuenta) | Servir el sitio desde la api, detrás de API Gateway |
+El 25/10, el workflow `Aplicar` corrió sobre el commit de la Entrega 3 (`e39b70d`) en una cuenta
+del Learner Lab y terminó en nueve minutos con «Apply complete! Resources: 189 added». El
+constructor construyó y subió las dos imágenes, y se crearon sin errores todas las piezas que la
+sección 12 del HTML marcaba como dudosas: el VPC Link hacia el ALB interno, el WAF asociado al ALB,
+los cuatro servicios de Fargate con su escalado, Container Insights, el disparador Lambda de
+Cognito, el push a ECR desde el constructor y el bucket web público. Ninguna necesitó su plan B.
+
+En noviembre se desplegó desde el fork la rama que junta los permisos por rol con la junta de
+modelos, y se probó a mano: cada cuenta ve y usa solo lo de su grupo, y un registro real quedó con
+su grupo puesto por el disparador de Cognito. Esa prueba mostró que «Ingresar → Sign up» dejaba la
+cuenta como publicador, y de ahí salió el tercer cliente sin grupo y la elección del tipo en la
+app. El 11/11, el merge a `main` desplegó todo junto: «Apply complete! Resources: 7 added, 4
+changed, 7 destroyed».
+
+El 17/11, `Aplicar` corrió a mano desde la rama `seguridad/limite-por-cliente` sobre un lab
+destruido y terminó en nueve minutos y medio con «Apply complete! Resources: 191 added»: los dos
+topes del WAF y sus dos alarmas se crearon sin errores. Después, desde una PC, se mandaron 6.000
+pedidos a `/api/publico/demo`, 20 a la vez, con los topes por defecto, y el pedido siguiente
+recibió `429` con `{"error": "demasiados_pedidos", …}`. Ese `429` solo lo da la regla `por-ip`:
+los pedidos no llevaban token, y las reglas administradas contestan `403`. Así que también quedó
+probado que `x-ip-cliente` llega al ALB con la IP del cliente.
+
+### Lo que falta probar
+
+Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas andar:
+
+| Qué | Cómo se ve | Si falla |
+|-----|------------|----------|
+| El escalado del worker por backlog (Container Insights publica `RunningTaskCount` recién con tareas corriendo) | Carga sostenida en `inferencias` y el servicio `worker` subiendo de 1 a más tareas | `container_insights = false`: escala por escalones sobre los mensajes visibles |
+| La cuota de vCPU de Fargate con todo escalado (8,5 vCPU) | El worker en 4 tareas con el evaluador corriendo | Bajar tamaños y máximos en `ecs.tf` |
+| Las llamadas admin a Cognito desde las tareas de la api con `LabRole` (`AdminListGroupsForUser`, `AdminAddUserToGroup`), para elegir el tipo de cuenta | Registrarse desde «Ingresar», elegir institución y analizar un estudio | Registrarse por «Registrate como institución / publicador», que da el grupo con la Lambda |
+| El recorrido completo: login, consulta, junta y publicación con el evaluador arrancando de 0 | Los criterios de aceptación de `specs.md` §13 | — |
+| El tope `por-cuenta` y el mail de las alarmas del WAF (`por-ip` ya cortó, el 17/11) | La prueba de «Cambiarlos en vivo» con `-H "Authorization: Bearer <access token>"` contra una ruta con token; el mail llega si la suscripción de SNS está confirmada | Las rutas con token quedan acotadas por el límite de API Gateway |
 
 ## Lo que marca tfsec, y por qué
 
@@ -227,7 +365,7 @@ finales de línea CRLF da otro hash que uno de Linux. Corré Terraform siempre d
 cd terraform/organization
 terraform init -backend=false
 terraform validate
-terraform test          # la arquitectura del HTML contra un AWS simulado: red, cómputo, login, variables
+terraform test          # la arquitectura del HTML contra un AWS simulado: red, cómputo, login, límites de pedidos, variables
 ```
 
 ## Módulos, funciones y meta-argumentos
@@ -248,7 +386,7 @@ proveedores, así que esa línea es lo único que garantiza que la cátedra baje
 
 | Meta-argumento | Usos | Un ejemplo |
 |----------------|------|------------|
-| `for_each` | 32 | Las once subredes salen de un mapa de capas (`red.tf`); los cuatro servicios de Fargate, de `local.servicios` (`ecs.tf`) |
+| `for_each` | 33 | Las once subredes salen de un mapa de capas (`red.tf`); los cuatro servicios de Fargate, de `local.servicios` (`ecs.tf`) |
 | `depends_on` | 15 | Cada configuración de bucket espera a `terraform_data.buckets`, porque los buckets no los crea el proveedor (`s3.tf`) |
 | `count` | 6 | La suscripción de SNS existe solo si hay un mail de alertas (`alertas.tf`) |
 | `lifecycle` | 2 | `ignore_changes` en el `desired_count` de los servicios, que lo maneja el escalado (`ecs.tf`), y en la AMI del constructor, que cambia sola cada tanto (`imagenes.tf`) |
@@ -267,7 +405,7 @@ proveedores, así que esa línea es lo único que garantiza que la cátedra baje
 | `abspath` | La ruta del script de los buckets y la raíz del repositorio, que no dependen de desde dónde se corra |
 | `toset`, `keys`, `flatten`, `distinct`, `sort`, `concat`, `length`, `contains`, `strcontains`, `split`, `join`, `replace`, `upper`, `endswith`, `tostring`, `urlencode` | El resto, repartidas |
 
-Hay además 11 variables y 10 salidas en el root, y 5 bloques `validation`.
+Hay además 15 variables y 10 salidas en el root, y 9 bloques `validation`.
 
 ## El pipeline de GitHub Actions
 
@@ -280,7 +418,7 @@ cada sesión:
 |----------|--------------|----------|----------|
 | `validar.yml` | solo, en cada push y cada PR | no | `fmt -check`, `init -backend=false`, `validate`, `test` |
 | `plan.yml` | en el PR hacia `main`, y a mano | sí | bucket del estado, `init` y `plan`; guarda el plan como artifact |
-| `aplicar.yml` | **solo, en cada push a `main`** (al mergear), y a mano escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial. Sin credenciales en los secrets termina en verde sin desplegar; con credenciales vencidas, falla |
+| `aplicar.yml` | **solo, en cada push a `main`** (al mergear), y a mano escribiendo «aplicar» | sí | bucket del estado, `init`, `validate` y `apply`; imprime el sitio y el admin inicial. Sin credenciales vigentes en los secrets falla y no despliega |
 | `destruir.yml` | **solo a mano**, escribiendo «destruir» | sí | `tf.sh destroy` |
 
 El ciclo `init` → `validate` → `plan` → `apply` que pide la entrega queda así: `validar.yml` hace
@@ -299,12 +437,13 @@ Los workflows no repiten comandos: llaman a `scripts/bootstrap-estado.sh` y `scr
 mismos que usa una persona en CloudShell. Así el pipeline no puede desalinearse de esta guía.
 
 **Mergear a `main` despliega.** Aplicar corre solo con cada push a `main`: lo que llega a main se
-aplica en el lab, si los secrets tienen las credenciales de la sesión. Destruir, en cambio, es
-solo a mano. El lab cuesta unos USD 7 por día prendido y la regla de uso es destruir al terminar:
-un merge a main con credenciales vigentes prende el entorno (o lo actualiza, si ya estaba), y
-después hay que correr «Destruir». Un merge que solo cambia documentación fuera de las carpetas
-del código (estos README, `architecture.md`, `specs.md`) no cambia el hash de las imágenes, así
-que el apply corre pero sale sin cambios. Plan, aplicar y destruir comparten
+aplica en el lab, si los secrets tienen las credenciales de la sesión (si no, falla sin tocar
+nada; ver más abajo). Destruir, en cambio, es solo a mano: un merge no tiene que poder apagarle el
+entorno a otro. El lab cuesta unos USD 7 por día prendido y la regla de uso es destruir al
+terminar: un merge a main con credenciales vigentes prende el entorno (o lo actualiza, si ya
+estaba), y después hay que correr «Destruir». Un merge que solo cambia documentación fuera de las
+carpetas del código (estos README, `architecture.md`, `specs.md`, el diagrama) no cambia el hash
+de las imágenes, así que el apply corre pero sale sin cambios. Plan, aplicar y destruir comparten
 `concurrency: infraestructura`, así que nunca corren dos a la vez contra la misma cuenta.
 
 ### Secrets que hay que cargar en el repositorio
@@ -322,6 +461,15 @@ En Settings → Secrets and variables → Actions → New repository secret:
 Las tres primeras **vencen cada sesión del lab** (unas cuatro horas): hay que volver a pegarlas
 antes de correr `plan`, `aplicar` o `destruir`, y antes de mergear a `main` si el merge tiene
 que desplegar.
+
+**Sin esas credenciales cargadas a mano no hay despliegue desde GitHub, y no hay forma de
+evitarlo.** GitHub Actions entra a la cuenta del Learner Lab solo con las credenciales de la
+sesión: el lab no deja crear roles de IAM, así que tampoco hay OIDC entre GitHub y AWS ni una
+credencial que no venza. Antes de mergear a `main` (o de correr `aplicar` a mano) hay que pegar las
+de la sesión actual. Si faltan, `Aplicar` falla en el `init`, porque sin credenciales no se crea el
+bucket del estado ni `backend.hcl`; si vencieron, falla con un mensaje que lo dice. En los dos
+casos no despliega nada: es lo esperado, no un error del pipeline. Pasó en el merge de la Entrega 3
+(25/10): el `Aplicar` del push falló, se cargaron las credenciales y el `Aplicar` manual desplegó.
 
 ## Inicialización automática de modelos
 

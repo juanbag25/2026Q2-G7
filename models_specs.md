@@ -1,8 +1,9 @@
-# Tres modelos disponibles desde el primer despliegue
+# Los modelos disponibles desde el primer despliegue
 
-Estado: ampliación a tres modelos implementada y verificada localmente.
+Estado: ampliación a tres modelos de Rx de tórax implementada y verificada localmente; el mismo día
+se sumó un segundo tipo de estudio, RM de cerebro, con dos modelos más (§10). Hoy son cinco.
 
-Investigación e implementación realizadas el 20 de octubre de 2026. La preparación automática, los tres modelos y la UI están implementados. La infraestructura se validó con proveedores simulados; no se desplegaron recursos reales en AWS.
+Investigación e implementación realizadas el 20 de octubre de 2026. La preparación automática, los tres modelos y la UI están implementados. La infraestructura se validó con proveedores simulados; no se desplegaron recursos reales en AWS. Después, el 25 de octubre, el workflow `Aplicar` desplegó todo en un Learner Lab (ver `terraform/README.md`).
 
 ## 1. Objetivo y experiencia del usuario
 

@@ -3,7 +3,7 @@
 #
 #   bash terraform/organization/scripts/tf.sh plan
 #   bash terraform/organization/scripts/tf.sh apply
-#   bash terraform/organization/scripts/tf.sh apply -var encendido=false      # la rutina de antes de End Lab
+#   bash terraform/organization/scripts/tf.sh destroy                         # al terminar cada sesión de trabajo
 #
 # El proveedor de AWS ocupa unos 850 MB descomprimido: en el $HOME de CloudShell (1 GB) no
 # entra. Así que el binario va a ~/bin (90 MB, persiste) y el proveedor a /tmp, que no persiste

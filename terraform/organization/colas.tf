@@ -3,8 +3,10 @@
 #
 #   cola          publica              consume      invisible mientras se procesa   a fallidos tras
 #   inferencias   api, procesador      worker       2 min                           3 intentos
-#   evaluaciones  api                  evaluador    30 min, extendible             2 intentos
+#   evaluaciones  api, procesador*     evaluador    30 min, extendible             2 intentos
 #   resultados    worker, evaluador    procesador   1 min                           5 intentos
+#
+#   * el procesador solo con datos_demo = true: encola la evaluación del modelo de demostración.
 
 locals {
   colas = {
