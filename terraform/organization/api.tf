@@ -30,9 +30,11 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 
+  # Por ruta y sumando a todos los clientes. El reparto por cliente lo hace el WAF del ALB, que
+  # viene después: lo que el WAF bloquea ya gastó de este límite (variables.tf, balanceador.tf).
   default_route_settings {
-    throttling_rate_limit  = 50
-    throttling_burst_limit = 100
+    throttling_rate_limit  = var.api_pedidos_por_segundo
+    throttling_burst_limit = var.api_rafaga
   }
 
   access_log_settings {
@@ -72,9 +74,12 @@ resource "aws_apigatewayv2_integration" "alb" {
   connection_id      = aws_apigatewayv2_vpc_link.ateneo.id
   integration_uri    = aws_lb_listener.api.arn
 
-  # El camino tal cual llegó (/api/...). Con el stage $default ya es así; queda escrito.
   request_parameters = {
+    # El camino tal cual llegó (/api/...). Con el stage $default ya es así; queda escrito.
     "overwrite:path" = "$request.path"
+    # La IP de quien le habló a API Gateway, para el tope por IP del WAF (balanceador.tf).
+    # overwrite pisa lo que el cliente haya mandado en este encabezado: no se puede falsificar.
+    "overwrite:header.${local.encabezado_ip}" = "$context.identity.sourceIp"
   }
 }
 

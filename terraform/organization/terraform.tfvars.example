@@ -15,6 +15,13 @@ datos_demo = true
 # false si el laboratorio no deja asociar un WAF al ALB.
 waf_activo = true
 
+# Límites de pedidos (variables.tf explica de dónde sale cada número). Se cambian en vivo con un
+# apply, sin reemplazar nada. Para mostrar el tope en la demo, bajá waf_pedidos_por_cuenta a 20.
+api_pedidos_por_segundo = 500  # API Gateway, por ruta, sumando a todos los clientes
+api_rafaga              = 1000 # API Gateway, de golpe por encima del promedio
+waf_pedidos_por_cuenta  = 300  # WAF, por minuto y por token
+waf_pedidos_por_ip      = 1200 # WAF, por minuto y por IP, en /api/health y /api/publico/*
+
 # Container Insights: publica RunningTaskCount, el divisor con el que escalan worker y procesador.
 # false si el laboratorio no lo permite; ahí los dos escalan por mensajes a secas.
 container_insights = true

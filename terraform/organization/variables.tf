@@ -40,9 +40,75 @@ variable "datos_demo" {
 }
 
 variable "waf_activo" {
-  description = "WAF con reglas administradas de AWS en el ALB. false si el laboratorio no lo permite (sección 12)."
+  description = "WAF en el ALB: los dos topes por cliente y las reglas administradas de AWS. false si el laboratorio no lo permite (sección 12)."
   type        = bool
   default     = true
+}
+
+# --- Límites de pedidos --------------------------------------------------------------------
+# Tres números que se cambian en vivo: un apply los actualiza sin reemplazar nada. El WAF pone en
+# cero sus cuentas al cambiar un tope y puede tardar hasta un minuto en volver a cortar.
+#
+# La api atiende unos 200 pedidos por segundo con sus 4 tareas de 0,5 vCPU: unos 50 por tarea
+# en rutas que consultan la base. Es una estimación, no una medición.
+
+variable "api_pedidos_por_segundo" {
+  description = <<-EOT
+    Pedidos por segundo que API Gateway deja pasar por cada ruta, sumando a todos los clientes.
+    Lo que el WAF bloquea ya pasó por acá y gastó de este límite: por eso es 500 y no los 200 que
+    atiende la api. Queda lugar para la api entera aunque alguien mande 300 por segundo que el
+    WAF está cortando.
+  EOT
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.api_pedidos_por_segundo >= 1 && var.api_pedidos_por_segundo <= 10000
+    error_message = "Entre 1 y 10.000: el límite de una ruta no puede pasar el de la cuenta, que es de 10.000 por segundo."
+  }
+}
+
+variable "api_rafaga" {
+  description = "Pedidos que API Gateway acepta de golpe en una ruta por encima del promedio: el tamaño del balde. Dos segundos de api_pedidos_por_segundo."
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.api_rafaga >= 1 && var.api_rafaga <= 5000
+    error_message = "Entre 1 y 5.000: la ráfaga de una ruta no puede pasar la de la cuenta."
+  }
+}
+
+variable "waf_pedidos_por_cuenta" {
+  description = <<-EOT
+    Pedidos por minuto que el WAF le deja hacer a cada token (encabezado Authorization) en todas
+    las rutas; desde el siguiente contesta 429. La pestaña que más pide (la de la junta, esperando
+    resultados mientras se preparan los modelos) hace unos 70: 300 deja lugar para cuatro abiertas
+    a la vez. Una cuenta en el tope usa 5 por segundo, el 1 % del límite de API Gateway.
+  EOT
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.waf_pedidos_por_cuenta >= 10
+    error_message = "El WAF no acepta topes por tasa menores que 10."
+  }
+}
+
+variable "waf_pedidos_por_ip" {
+  description = <<-EOT
+    Pedidos por minuto que el WAF le deja hacer a cada IP en las rutas sin token (/api/health y
+    /api/publico/*). Todas las pestañas detrás de un mismo NAT comparten IP: una pide /api/health
+    cada 10 s y, mientras se preparan los modelos, el catálogo cada 5 s, unos 30 por minuto. 1.200
+    deja entrar a un aula entera, unas 40 pestañas.
+  EOT
+  type        = number
+  default     = 1200
+
+  validation {
+    condition     = var.waf_pedidos_por_ip >= 10
+    error_message = "El WAF no acepta topes por tasa menores que 10."
+  }
 }
 
 variable "crear_buckets" {
