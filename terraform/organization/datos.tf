@@ -1,5 +1,6 @@
-# Sección 08: RDS PostgreSQL 16, db.t3.micro, cifrada, en las subredes de datos. Single-AZ
-# porque el laboratorio no permite Multi-AZ (riesgo 04). Solo la alcanzan api y procesador.
+# Sección 08: RDS PostgreSQL 16, db.t3.micro, cifrada, en las subredes de datos. Multi-AZ: una
+# instancia activa y un standby sincrónico en la otra zona, con failover automático. Solo la
+# alcanzan api y procesador.
 
 resource "aws_db_subnet_group" "ateneo" {
   name       = "ateneo-datos"
@@ -32,7 +33,7 @@ resource "aws_db_instance" "ateneo" {
   db_subnet_group_name   = aws_db_subnet_group.ateneo.name
   vpc_security_group_ids = [local.sg["db"]]
   publicly_accessible    = false
-  multi_az               = false # en producción, true
+  multi_az               = true
 
   backup_retention_period = 7
   deletion_protection     = false

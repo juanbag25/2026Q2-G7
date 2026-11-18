@@ -28,7 +28,7 @@ sobre `terraform/modules`).
 | ECS Fargate: api, procesador, worker, evaluador | `ecs.tf`, `escalado.tf` |
 | ECR y el constructor de imágenes | `imagenes.tf`, `plantillas/constructor.sh.tftpl` |
 | SQS: `inferencias`, `evaluaciones`, `resultados`, cada una con su cola de fallidos | `colas.tf`, `modules/cola/` |
-| RDS PostgreSQL 16 y su URL en Secrets Manager | `datos.tf` |
+| RDS PostgreSQL 16 Multi-AZ y su URL en Secrets Manager | `datos.tf` |
 | Cinco buckets: web (el sitio), modelos, estudios, evaluación, artefactos | `s3.tf`, `scripts/buckets.sh` |
 | EFS como caché de modelos de los workers | `efs.tf` |
 | SNS y alarmas: colas de fallidos, 5xx del ALB y los dos topes del WAF | `alertas.tf` |
@@ -81,7 +81,8 @@ Después:
 Si pusiste `email_alertas`, AWS manda una confirmación de SNS que hay que aceptar una vez.
 
 **La regla de uso: se destruye al terminar cada sesión de trabajo** (`tf.sh destroy`). Prendido
-cuesta unos USD 7 por día; una sesión de tres horas, alrededor de un dólar.
+cuesta unos USD 7,50 por día (Multi-AZ duplica el costo de la base: suma alrededor de medio dólar);
+una sesión de tres horas, alrededor de un dólar.
 
 ## Login con Cognito
 
@@ -259,7 +260,7 @@ las corrige:
 | 3 | `generar-env.sh` escribía el usuario `ateneo`, y en la cuenta era `atenteo` | No hay más scripts de entorno a mano: `terraform apply` arma todo y los nombres salen de `locals.tf` y del sufijo guardado en el estado, nunca escritos dos veces |
 | 4 | `apagar.sh` no borraba los ALB, que siguieron cobrando | `terraform destroy` borra lo que creó, balanceador incluido, y `destruir.yml` lo corre desde el pipeline |
 | 5 | En la cuenta, `inf-b` y `data-b` colgaban de la tabla de ruteo principal | Una tabla de ruteo por capa y una asociación explícita por subred (`red.tf`): ninguna subred queda en la principal por omisión |
-| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; RDS es Single-AZ y no tiene standby; el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo, `arquitectura-aws.drawio`, está hecho sobre este código |
+| 6 | El diagrama tenía una flecha worker → RDS, dibujaba el standby de RDS y el EFS fuera de las zonas | El worker no tiene credenciales de base ni grupo de seguridad hacia ella; en ese momento RDS era Single-AZ y no tenía standby (hoy es Multi-AZ, y el diagrama dibuja las dos instancias); el EFS tiene un mount target por zona (`efs.tf`). El diagrama nuevo, `arquitectura-aws.drawio`, está hecho sobre este código |
 | 7 | El artifact de arquitectura decía «cuatro buckets» y eran cinco | Cinco, enumerados arriba y en `local.buckets`: web, modelos, estudios, evaluación y artefactos |
 | 8 | La AMI dorada no era reproducible desde el repositorio | No hay más AMI dorada: las dos imágenes se construyen dentro de la cuenta a partir del código del repositorio y la etiqueta es su hash (`imagenes.tf`). Mismo commit, misma imagen |
 
@@ -277,7 +278,8 @@ las corrige:
 - **Sin CloudFront ni dominio propio.** El HTTPS lo pone API Gateway; el sitio es HTTP. Y el WAF
   va en el ALB, detrás de API Gateway, porque a una HTTP API no se le puede asociar uno: lo que
   bloquea ya gastó del límite de API Gateway (ver arriba).
-- **RDS sin Multi-AZ**, solo `us-east-1`, sin instance refresh (ya no hay grupos de EC2).
+- **Solo `us-east-1`**, sin instance refresh (ya no hay grupos de EC2). RDS Multi-AZ sí se puede:
+  ver «Lo que ya se probó».
 - **Credenciales de sesión:** se corre desde CloudShell. `scripts/tf.sh` deja el proveedor de AWS
   en `/tmp` para no llenar el giga de `$HOME`.
 
@@ -305,6 +307,14 @@ recibió `429` con `{"error": "demasiados_pedidos", …}`. Ese `429` solo lo da 
 los pedidos no llevaban token, y las reglas administradas contestan `403`. Así que también quedó
 probado que `x-ip-cliente` llega al ALB con la IP del cliente.
 
+El 17/11 también se probó Multi-AZ en el lab, con una instancia suelta en la VPC por defecto
+(PostgreSQL 16, `db.t3.micro`, 20 GB gp3 cifrados, subredes en us-east-1a y us-east-1b). El lab la
+aceptó y quedó disponible en unos 15 minutos, contra unos 7 en Single-AZ, así que el primer apply
+puede tardar más. Un `aws rds reboot-db-instance --force-failover` terminó en unos 30 segundos: el
+endpoint pasó a una IP de la subred de us-east-1b y RDS tenía una interfaz de red en cada zona. La
+API siguió informando `us-east-1a` y `SecondaryAvailabilityZone` vacío: para saber cuál es la activa
+hay que mirar a qué IP resuelve el endpoint.
+
 ### Lo que falta probar
 
 Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas andar:
@@ -318,6 +328,7 @@ Un apply prueba que el lab deja crear cada pieza, no que funcione. Falta verlas 
 | El tope `por-cuenta` y el mail de las alarmas del WAF (`por-ip` ya cortó, el 17/11) | La prueba de «Cambiarlos en vivo» con `-H "Authorization: Bearer <access token>"` contra una ruta con token; el mail llega si la suscripción de SNS está confirmada | Las rutas con token quedan acotadas por el límite de API Gateway |
 | El tope de `/callback` y `/logout` | `seq 60 \| xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$API/callback" \| sort \| uniq -c`: `302` hasta el tope y después `429` | Las dos rutas quedan con el límite general de API Gateway |
 | El circuit breaker de ECS | Desplegar una versión de la api que se cae al arrancar: el servicio corta el despliegue, vuelve a la definición anterior y lo anota en sus eventos | Queda como antes: ECS reintenta y las tareas viejas siguen atendiendo |
+| RDS Multi-AZ en un apply completo, y el failover con la aplicación conectada | `tf.sh apply` y, con todo andando, `aws rds reboot-db-instance --db-instance-identifier ateneo-db --force-failover`: tras unos segundos `/api/publico/modelos` vuelve a contestar `200` | `multi_az = false` en `datos.tf` |
 
 ## Lo que marca tfsec, y por qué
 
@@ -449,7 +460,7 @@ mismos que usa una persona en CloudShell. Así el pipeline no puede desalinearse
 **Mergear a `main` despliega.** Aplicar corre solo con cada push a `main`: lo que llega a main se
 aplica en el lab, si los secrets tienen las credenciales de la sesión (si no, falla sin tocar
 nada; ver más abajo). Destruir, en cambio, es solo a mano: un merge no tiene que poder apagarle el
-entorno a otro. El lab cuesta unos USD 7 por día prendido y la regla de uso es destruir al
+entorno a otro. El lab cuesta unos USD 7,50 por día prendido y la regla de uso es destruir al
 terminar: un merge a main con credenciales vigentes prende el entorno (o lo actualiza, si ya
 estaba), y después hay que correr «Destruir». Un merge que solo cambia documentación fuera de las
 carpetas del código (estos README, `architecture.md`, `specs.md`, el diagrama) no cambia el hash
